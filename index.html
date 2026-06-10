@@ -267,7 +267,18 @@ ${text.slice(0,6000)}`;
     const d=await r.json();
     const raw=d.choices?.[0]?.message?.content||"";
     const clean=raw.replace(/```json|```/g,"").trim();
-    return JSON.parse(clean);
+    const parsed=JSON.parse(clean);
+    // Normalize fields - handle different key names Groq might use
+    if(parsed.fields){
+      parsed.fields=parsed.fields.map(f=>({
+        key:f.key||f.name||f.placeholder||(f.label||"FIELD").toUpperCase().replace(/\s+/g,"_"),
+        label:f.label||f.description||f.key||f.name||"Field",
+        type:f.type||"text",
+        required:f.required||false,
+        sample:f.sample||f.example||f.value||""
+      }));
+    }
+    return parsed;
   };
 
   const process=async(text,fname="pasted text")=>{
@@ -404,12 +415,12 @@ ${text.slice(0,6000)}`;
           {(result.fields||[]).map((f,i)=>(
             <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",
               background:f.required?C.rose+"06":C.bg,border:`1px solid ${f.required?C.rose+"30":"#E2E8F0"}`,borderRadius:9}}>
-              <code style={{fontSize:11,color:C.indigo,background:C.indigo+"12",padding:"2px 7px",borderRadius:5}}>{`{{${f.key}}}`}</code>
+              <code style={{fontSize:11,color:C.indigo,background:C.indigo+"12",padding:"2px 7px",borderRadius:5}}>{`{{${f.key||f.name||"FIELD"}}}`}</code>
               <div style={{flex:1}}>
-                <div style={{fontWeight:600,fontSize:13}}>{f.label}</div>
+                <div style={{fontWeight:600,fontSize:13}}>{f.label||f.description||f.key||f.name}</div>
                 {f.sample&&<div style={{fontSize:11,color:C.muted}}>e.g. {f.sample}</div>}
               </div>
-              <Badge color={TC[f.type]||C.slate}>{f.type}</Badge>
+              <Badge color={TC[f.type]||C.slate}>{f.type||"text"}</Badge>
             </div>
           ))}
         </div>
