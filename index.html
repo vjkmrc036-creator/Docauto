@@ -237,7 +237,7 @@ function Convert({apiKey,onDone}) {
   const addLog=msg=>setLog(p=>[...p,msg]);
 
   const callAI=async(text)=>{
-    setPhase("ai");addLog("🤖 Claude AI analyzing fields...");
+    setPhase("ai");addLog("🤖 Groq AI analyzing fields...");
     const prompt=`You are a document automation expert. Analyze this document and identify ALL variable fields (names, dates, IDs, amounts, addresses).
 
 Convert it into a template by replacing variable values with {{PLACEHOLDER_KEY}} tags.
@@ -263,23 +263,22 @@ ${text.slice(0,6000)}`;
     if(!r.ok)throw new Error(`API error ${r.status}`);
     const d=await r.json();
     const raw=d.choices?.[0]?.message?.content||"";
-    // Extract JSON from response - handle various wrapper formats
-    let jsonStr = raw;
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    if(jsonMatch) jsonStr = jsonMatch[0];
-    jsonStr = jsonStr.replace(/```json|```/g,"").trim();
+    addLog("📦 "+raw.slice(0,100));
+    let jsonStr = raw.replace(/```json|```/g,"").trim();
+    const m = jsonStr.match(/\{[\s\S]*\}/s);
+    if(m) jsonStr = m[0];
     const parsed=JSON.parse(jsonStr);
-    // Normalize fields
+    addLog("🔑 Field0: "+JSON.stringify(parsed.fields?.[0]));
     if(parsed.fields && Array.isArray(parsed.fields)){
       parsed.fields=parsed.fields.map(f=>{
-        const key = f.key||f.field_key||f.placeholder||f.name||
-          (f.label||f.field_name||"FIELD").toUpperCase().replace(/[^A-Z0-9]/g,"_");
+        const k=f.key||f.field_key||f.name||f.fieldName||f.placeholder||
+          (f.label||f.fieldLabel||f.field_name||"FIELD").toUpperCase().replace(/[^A-Z0-9]+/g,"_");
         return {
-          key: key,
-          label: f.label||f.field_label||f.description||f.field_name||key,
-          type: f.type||f.field_type||"text",
-          required: f.required!==undefined?f.required:true,
-          sample: f.sample||f.example||f.value||f.original_value||""
+          key:k,
+          label:f.label||f.fieldLabel||f.field_label||f.description||f.field_name||k,
+          type:f.type||f.fieldType||"text",
+          required:f.required!==undefined?f.required:true,
+          sample:f.sample||f.example||f.value||f.original_value||""
         };
       });
     }
