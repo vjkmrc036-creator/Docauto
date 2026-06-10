@@ -242,13 +242,10 @@ function Convert({apiKey,onDone}) {
 
 Convert it into a template by replacing variable values with {{PLACEHOLDER_KEY}} tags.
 
-Return ONLY valid JSON (no markdown, no extra text):
-{
-  "templateText": "full document with {{PLACEHOLDER}} substitutions",
-  "fields": [{"key":"PLACEHOLDER_KEY","label":"Human Label","type":"text|date|number|id|address|currency","required":true,"sample":"original value"}],
-  "docTitle": "Document Type",
-  "language": "language name"
-}
+Return ONLY a raw JSON object. No markdown, no code fences, no explanation. Exactly this structure:
+{"templateText":"document text with {{PLACEHOLDER_KEY}} substitutions","fields":[{"key":"PLACEHOLDER_KEY","label":"Human readable label","type":"text","required":true,"sample":"original value from doc"}],"docTitle":"Document Type","language":"English"}
+
+CRITICAL: Every field object MUST have "key" property in UPPERCASE_SNAKE_CASE.
 
 Rules:
 - UPPERCASE_SNAKE_CASE keys
@@ -266,17 +263,25 @@ ${text.slice(0,6000)}`;
     if(!r.ok)throw new Error(`API error ${r.status}`);
     const d=await r.json();
     const raw=d.choices?.[0]?.message?.content||"";
-    const clean=raw.replace(/```json|```/g,"").trim();
-    const parsed=JSON.parse(clean);
-    // Normalize fields - handle different key names Groq might use
-    if(parsed.fields){
-      parsed.fields=parsed.fields.map(f=>({
-        key:f.key||f.name||f.placeholder||(f.label||"FIELD").toUpperCase().replace(/\s+/g,"_"),
-        label:f.label||f.description||f.key||f.name||"Field",
-        type:f.type||"text",
-        required:f.required||false,
-        sample:f.sample||f.example||f.value||""
-      }));
+    // Extract JSON from response - handle various wrapper formats
+    let jsonStr = raw;
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if(jsonMatch) jsonStr = jsonMatch[0];
+    jsonStr = jsonStr.replace(/```json|```/g,"").trim();
+    const parsed=JSON.parse(jsonStr);
+    // Normalize fields
+    if(parsed.fields && Array.isArray(parsed.fields)){
+      parsed.fields=parsed.fields.map(f=>{
+        const key = f.key||f.field_key||f.placeholder||f.name||
+          (f.label||f.field_name||"FIELD").toUpperCase().replace(/[^A-Z0-9]/g,"_");
+        return {
+          key: key,
+          label: f.label||f.field_label||f.description||f.field_name||key,
+          type: f.type||f.field_type||"text",
+          required: f.required!==undefined?f.required:true,
+          sample: f.sample||f.example||f.value||f.original_value||""
+        };
+      });
     }
     return parsed;
   };
