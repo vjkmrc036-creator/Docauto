@@ -1,0 +1,975 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DocAuto AI – Document Automation</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',Inter,sans-serif;background:#F0F4FF;overflow:hidden;height:100vh}
+  input,textarea,button{font-family:inherit}
+  ::-webkit-scrollbar{width:5px;height:5px}
+  ::-webkit-scrollbar-track{background:#F0F4FF}
+  ::-webkit-scrollbar-thumb{background:#CBD5E1;border-radius:99px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes bounce{0%,80%,100%{transform:scale(0)}40%{transform:scale(1)}}
+  @keyframes fadein{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  .fadein{animation:fadein .3s ease}
+  /* API key setup screen */
+  #apiSetup{position:fixed;inset:0;background:#0B1437;display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px}
+  .setupCard{background:#162050;border-radius:20px;padding:36px;max-width:420px;width:100%;border:1px solid #4361EE40}
+  /* Bottom nav for mobile */
+  @media(max-width:640px){
+    #sidebar{display:none!important}
+    #bottomNav{display:flex!important}
+    #topbar{padding:0 12px!important}
+    #mainContent{padding:14px!important;padding-bottom:80px!important}
+  }
+  #bottomNav{display:none;position:fixed;bottom:0;left:0;right:0;background:#0B1437;border-top:1px solid #ffffff15;z-index:100;padding:6px 0}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useRef, useEffect, useCallback } = React;
+
+// ── Colors ──────────────────────────────────────────────────────────────────
+const C = {
+  navy:"#0B1437", navyM:"#162050", indigo:"#4361EE", indigoL:"#6B84F5",
+  gold:"#F4A828", teal:"#06BEB6", rose:"#F43F5E", green:"#22C55E",
+  amber:"#F59E0B", slate:"#64748B", bg:"#F0F4FF", card:"#FFFFFF",
+  text:"#1E293B", muted:"#64748B",
+};
+
+// ── Shared UI ────────────────────────────────────────────────────────────────
+const Badge = ({children, color=C.indigo}) => (
+  <span style={{background:color+"22",color,border:`1px solid ${color}44`,borderRadius:20,padding:"2px 10px",fontSize:11,fontWeight:700}}>
+    {children}
+  </span>
+);
+
+const Btn = ({children,onClick,color=C.indigo,outline,small,disabled,icon,full}) => (
+  <button onClick={onClick} disabled={disabled} style={{
+    background:outline?"transparent":(disabled?"#CBD5E1":color),
+    color:outline?color:(disabled?"#94A3B8":"#fff"),
+    border:`2px solid ${disabled?"#CBD5E1":color}`,
+    borderRadius:10,padding:small?"6px 14px":"10px 22px",
+    fontSize:small?12:14,fontWeight:700,cursor:disabled?"not-allowed":"pointer",
+    display:"inline-flex",alignItems:"center",gap:6,transition:"all .15s",
+    whiteSpace:"nowrap",width:full?"100%":"auto",
+  }}>
+    {icon&&<span>{icon}</span>}{children}
+  </button>
+);
+
+const Card = ({children,style={}}) => (
+  <div style={{background:C.card,borderRadius:16,padding:24,boxShadow:"0 2px 16px #4361EE0F",border:"1px solid #E2E8F0",...style}}>
+    {children}
+  </div>
+);
+
+const Heading = ({title,sub}) => (
+  <div style={{marginBottom:20}}>
+    <h2 style={{margin:0,fontSize:20,fontWeight:800,color:C.text}}>{title}</h2>
+    {sub&&<p style={{margin:"4px 0 0",color:C.muted,fontSize:13}}>{sub}</p>}
+  </div>
+);
+
+// ── API Key Setup Screen ─────────────────────────────────────────────────────
+function ApiSetup({onDone}) {
+  const [key,setKey]=useState("");
+  const [err,setErr]=useState("");
+  const [show,setShow]=useState(false);
+
+  const save = () => {
+    const k=key.trim();
+    if(!k){setErr("Please paste your API key");return;}
+    if(!k.startsWith("sk-ant")){setErr("Key must start with sk-ant-api03-...");return;}
+    if(k.length<40){setErr("Key looks too short — please paste the full key");return;}
+    setErr("");
+    localStorage.setItem("DOCAUTO_KEY",k);
+    onDone(k);
+  };
+
+  return (
+    <div id="apiSetup">
+      <div className="setupCard">
+        <div style={{textAlign:"center",marginBottom:28}}>
+          <div style={{fontSize:48,marginBottom:12}}>📋</div>
+          <h1 style={{color:"#fff",fontSize:22,fontWeight:900,marginBottom:6}}>DocAuto AI</h1>
+          <p style={{color:"#6B84F5",fontSize:13}}>Document Automation Platform</p>
+        </div>
+        <div style={{marginBottom:16}}>
+          <label style={{color:"#94A3B8",fontSize:12,fontWeight:700,display:"block",marginBottom:8}}>ANTHROPIC API KEY</label>
+          <div style={{position:"relative"}}>
+            <input value={key} onChange={e=>setKey(e.target.value)} placeholder="sk-ant-api03-..."
+              type={show?"text":"password"}
+              style={{width:"100%",padding:"12px 44px 12px 14px",background:"#0B1437",
+                border:"2px solid "+(err?"#F43F5E":"#4361EE40"),
+                borderRadius:10,color:"#fff",fontSize:14,outline:"none",boxSizing:"border-box"}}/>
+            <button onClick={()=>setShow(p=>!p)}
+              style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",
+                background:"none",border:"none",color:"#6B84F5",cursor:"pointer",fontSize:16}}>
+              {show?"🙈":"👁"}
+            </button>
+          </div>
+          {err&&<p style={{color:"#F43F5E",fontSize:12,marginTop:6}}>⚠ {err}</p>}
+          <p style={{color:"#475569",fontSize:11,marginTop:6}}>
+            💡 Long-press the field and tap Paste to enter your key
+          </p>
+        </div>
+        <Btn full color={C.indigo} onClick={save} disabled={!key.trim()}>
+          🚀 Save Key & Start App
+        </Btn>
+        <div style={{marginTop:20,padding:14,background:"#0B143780",borderRadius:10,border:"1px solid #4361EE30"}}>
+          <p style={{color:"#94A3B8",fontSize:12,lineHeight:1.7,margin:0}}>
+            <strong style={{color:"#6B84F5"}}>How to get a free API key:</strong><br/>
+            1. Go to <strong style={{color:"#F4A828"}}>console.anthropic.com</strong><br/>
+            2. Sign up → API Keys → Create Key<br/>
+            3. Copy the key (starts with sk-ant-...)<br/>
+            4. New accounts get <strong style={{color:"#22C55E"}}>$5 free credits</strong>
+          </p>
+        </div>
+        <p style={{color:"#475569",fontSize:11,textAlign:"center",marginTop:12}}>
+          🔒 Key saved locally on your device only
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ── SAMPLES ──────────────────────────────────────────────────────────────────
+const SAMPLES = [
+  {name:"Sale Deed",text:`SALE DEED
+
+This Sale Deed is executed on 15th November 2024 between:
+
+SELLER: Mr. Ramesh Kumar, son of Mr. Gopal Kumar, aged 45 years, residing at House No. 12, Gandhi Nagar, Hyderabad, Telangana - 500001. Aadhaar: 4082 5047 9138, PAN: ABCDE1234F.
+
+BUYER: Mr. Suresh Rao, son of Mr. Venkat Rao, aged 38 years, residing at Flat 5B, Lakshmi Apartments, Vijayawada, Andhra Pradesh - 520010. Aadhaar: 3960 2269 1951, PAN: FGHIJ5678K.
+
+PROPERTY: Plot No. 25, Survey Number 125/2, admeasuring 200 Sq. Yards, situated at Ramachandrapuram Village, Ibrahimpatnam Mandal, NTR District.
+
+BOUNDARIES: East: Road; West: Krishna Land; North: Ravi Property; South: Canal.
+
+SALE CONSIDERATION: Rs. 31,50,000/- (Rupees Thirty One Lakhs Fifty Thousand Only).
+
+Signed by both parties in presence of witnesses.`},
+  {name:"Affidavit",text:`AFFIDAVIT
+
+I, Rahul Sharma, son of Mahesh Sharma, aged 32 years, residing at House No. 45, Sardar Patel Nagar, New Delhi - 110001. Aadhaar: 1234 5678 9012, PAN: PQRST9012L.
+
+Do hereby solemnly affirm and declare that:
+1. I am a citizen of India.
+2. My date of birth is 15th March 1992.
+3. My annual income is Rs. 6,00,000/- (Six Lakhs only).
+4. All the above facts are true to the best of my knowledge.
+
+Date: 20th November 2024
+Place: New Delhi`},
+  {name:"Rental Agreement",text:`RENTAL AGREEMENT
+
+This Rental Agreement is made on 1st January 2025 between:
+
+LANDLORD: Mrs. Priya Nair, daughter of Mr. Krishnan Nair, aged 52 years, residing at No. 7, MG Road, Kochi, Kerala - 682001. Contact: 9876543210.
+
+TENANT: Mr. Arjun Mehta, son of Mr. Sunil Mehta, aged 29 years, residing at 302, Silver Oaks, Bangalore - 560001. Aadhaar: 9876 5432 1098.
+
+PREMISES: Flat No. 4A, 2nd Floor, Sunrise Apartments, Whitefield, Bangalore - 560066.
+
+Monthly Rent: Rs. 25,000/- | Security Deposit: Rs. 75,000/-
+Lease Period: 11 months (1st Jan 2025 to 30th Nov 2025).`},
+];
+
+const DEFAULT_TPL = {
+  docTitle:"Sale Deed",language:"English",
+  templateText:`SALE DEED
+
+Date: {{DEED_DATE}}
+
+SELLER: {{SELLER_NAME}} S/o {{SELLER_FATHER}}, Age: {{SELLER_AGE}} yrs
+Aadhaar: {{SELLER_AADHAAR}} | PAN: {{SELLER_PAN}}
+Address: {{SELLER_ADDRESS}}
+
+BUYER: {{BUYER_NAME}} S/o {{BUYER_FATHER}}, Age: {{BUYER_AGE}} yrs
+Aadhaar: {{BUYER_AADHAAR}} | PAN: {{BUYER_PAN}}
+Address: {{BUYER_ADDRESS}}
+
+PROPERTY: Survey No: {{SURVEY_NO}}
+District: {{DISTRICT_NAME}}, Mandal: {{MANDAL_NAME}}
+
+Sale Value: Rs.{{SALE_VALUE}}/- ({{SALE_VALUE_WORDS}})`,
+  fields:[
+    {key:"DEED_DATE",label:"Deed Date",type:"date",required:true,sample:"20-Nov-2024"},
+    {key:"SELLER_NAME",label:"Seller Name",type:"text",required:true,sample:"చింతల నారాయణరావు"},
+    {key:"SELLER_FATHER",label:"Seller Father Name",type:"text",required:true,sample:"చింతల అంజయ్యలు"},
+    {key:"SELLER_AGE",label:"Seller Age",type:"number",required:true,sample:"41"},
+    {key:"SELLER_AADHAAR",label:"Seller Aadhaar",type:"id",required:true,sample:"4082 5047 9138"},
+    {key:"SELLER_PAN",label:"Seller PAN",type:"id",required:false,sample:"BUGPC2666F"},
+    {key:"SELLER_ADDRESS",label:"Seller Address",type:"address",required:false,sample:""},
+    {key:"BUYER_NAME",label:"Buyer Name",type:"text",required:true,sample:"మిట్టకోల వెంకటేశ్వరరావు"},
+    {key:"BUYER_FATHER",label:"Buyer Father Name",type:"text",required:true,sample:"మిట్టకోల కోటేశ్వరరావు"},
+    {key:"BUYER_AGE",label:"Buyer Age",type:"number",required:true,sample:"49"},
+    {key:"BUYER_AADHAAR",label:"Buyer Aadhaar",type:"id",required:true,sample:"3960 2269 1951"},
+    {key:"BUYER_PAN",label:"Buyer PAN",type:"id",required:false,sample:"BWBPV2012H"},
+    {key:"BUYER_ADDRESS",label:"Buyer Address",type:"address",required:false,sample:""},
+    {key:"SURVEY_NO",label:"Survey Number",type:"text",required:true,sample:"52/1బి"},
+    {key:"DISTRICT_NAME",label:"District",type:"text",required:true,sample:"యస్.టి.ఆర్.జిల్లా"},
+    {key:"MANDAL_NAME",label:"Mandal",type:"text",required:true,sample:"ఇబ్రహీంపట్నం"},
+    {key:"SALE_VALUE",label:"Sale Value (₹)",type:"currency",required:true,sample:"31,50,000"},
+    {key:"SALE_VALUE_WORDS",label:"Amount in Words",type:"text",required:true,sample:"Thirty One Lakhs Fifty Thousand Only"},
+  ]
+};
+
+// ── Convert Module ───────────────────────────────────────────────────────────
+function Convert({apiKey,onDone}) {
+  const [phase,setPhase]=useState("idle");
+  const [log,setLog]=useState([]);
+  const [result,setResult]=useState(null);
+  const [err,setErr]=useState("");
+  const [pasteText,setPasteText]=useState("");
+  const fileRef=useRef();
+
+  const addLog=msg=>setLog(p=>[...p,msg]);
+
+  const callAI=async(text)=>{
+    setPhase("ai");addLog("🤖 Claude AI analyzing fields...");
+    const prompt=`You are a document automation expert. Analyze this document and identify ALL variable fields (names, dates, IDs, amounts, addresses).
+
+Convert it into a template by replacing variable values with {{PLACEHOLDER_KEY}} tags.
+
+Return ONLY valid JSON (no markdown, no extra text):
+{
+  "templateText": "full document with {{PLACEHOLDER}} substitutions",
+  "fields": [{"key":"PLACEHOLDER_KEY","label":"Human Label","type":"text|date|number|id|address|currency","required":true,"sample":"original value"}],
+  "docTitle": "Document Type",
+  "language": "language name"
+}
+
+Rules:
+- UPPERCASE_SNAKE_CASE keys
+- Every name, date, amount, ID, address = a field
+- Keep standard/legal text unchanged
+
+DOCUMENT:
+${text.slice(0,6000)}`;
+
+    const r=await fetch("https://api.anthropic.com/v1/messages",{
+      method:"POST",
+      headers:{"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01"},
+      body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:4000,messages:[{role:"user",content:prompt}]})
+    });
+    if(!r.ok)throw new Error(`API error ${r.status}`);
+    const d=await r.json();
+    const raw=d.content?.[0]?.text||"";
+    const clean=raw.replace(/```json|```/g,"").trim();
+    return JSON.parse(clean);
+  };
+
+  const process=async(text,fname="pasted text")=>{
+    setPhase("reading");setLog([]);setErr("");
+    addLog(`📄 Reading ${fname}...`);
+    try{
+      addLog(`✅ ${text.length} characters`);
+      const parsed=await callAI(text);
+      addLog(`✅ Found ${parsed.fields?.length||0} fields`);
+      addLog("🎉 Done!");
+      setResult(parsed);setPhase("done");
+    }catch(e){setErr(e.message);setPhase("error");}
+  };
+
+  const onFile=e=>{
+    const f=e.target.files?.[0];if(!f)return;
+    const name=f.name.toLowerCase();
+    if(name.endsWith(".txt")||name.endsWith(".md")||name.endsWith(".html")){
+      const rd=new FileReader();
+      rd.onload=ev=>process(ev.target.result,f.name);
+      rd.readAsText(f);
+    }else{setPhase("paste");}
+  };
+
+  const TC={text:C.indigo,date:C.teal,number:C.gold,id:C.rose,address:C.slate,currency:C.green};
+
+  if(phase==="idle") return(
+    <div className="fadein">
+      <Heading title="Convert Document → Fillable Template"
+        sub="Upload or paste any document. AI detects all variable fields automatically."/>
+      <Card>
+        <div onClick={()=>fileRef.current.click()}
+          style={{border:"2px dashed #CBD5E1",borderRadius:12,padding:"36px 16px",textAlign:"center",
+            background:C.bg,cursor:"pointer"}}
+          onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor=C.indigo;}}
+          onDragLeave={e=>{e.currentTarget.style.borderColor="#CBD5E1";}}
+          onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor="#CBD5E1";const f=e.dataTransfer.files[0];if(f){const rd=new FileReader();rd.onload=ev=>process(ev.target.result,f.name);rd.readAsText(f);}}}>
+          <div style={{fontSize:44}}>📄</div>
+          <p style={{fontWeight:700,margin:"10px 0 4px",color:C.text}}>Drop file or tap to browse</p>
+          <p style={{color:C.muted,fontSize:12}}>TXT · MD · HTML supported</p>
+          <input ref={fileRef} type="file" accept=".txt,.md,.html" style={{display:"none"}} onChange={onFile}/>
+        </div>
+
+        <div style={{margin:"20px 0 8px",fontWeight:700,fontSize:13,color:C.text}}>✏️ Or paste document text:</div>
+        <textarea value={pasteText} onChange={e=>setPasteText(e.target.value)}
+          placeholder="Paste your document here (Telugu, English, Hindi — any language)..."
+          style={{width:"100%",minHeight:130,padding:12,border:"2px solid #E2E8F0",borderRadius:10,
+            fontSize:13,lineHeight:1.7,resize:"vertical",outline:"none",color:C.text}}/>
+        <div style={{marginTop:8}}>
+          <Btn color={C.indigo} disabled={!pasteText.trim()} onClick={()=>process(pasteText)}>
+            🔄 Convert to Template
+          </Btn>
+        </div>
+
+        <div style={{marginTop:20}}>
+          <p style={{fontSize:12,color:C.muted,fontWeight:600,marginBottom:8}}>Try a sample:</p>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            {SAMPLES.map(s=>(
+              <button key={s.name} onClick={()=>process(s.text,s.name)}
+                style={{padding:"5px 12px",border:`1px solid ${C.indigo}40`,borderRadius:20,
+                  background:C.indigo+"10",color:C.indigo,fontSize:12,fontWeight:600,cursor:"pointer"}}>
+                {s.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+
+  if(phase==="reading"||phase==="ai") return(
+    <Card style={{textAlign:"center",padding:48}}>
+      <div style={{fontSize:52,display:"inline-block",animation:"spin 1s linear infinite"}}>
+        {phase==="reading"?"📖":"🧠"}
+      </div>
+      <p style={{fontWeight:800,fontSize:17,margin:"14px 0 4px",color:C.text}}>
+        {phase==="reading"?"Reading Document…":"AI Analyzing…"}
+      </p>
+      <div style={{display:"flex",flexDirection:"column",gap:6,maxWidth:340,margin:"16px auto 0",textAlign:"left"}}>
+        {log.map((l,i)=>(
+          <div key={i} style={{fontSize:12,color:C.indigo,background:C.indigo+"10",padding:"5px 10px",borderRadius:7}}>{l}</div>
+        ))}
+      </div>
+    </Card>
+  );
+
+  if(phase==="paste") return(
+    <div className="fadein">
+      <Heading title="Paste Document Content" sub="PDF/DOCX can't be read directly — please paste the text below."/>
+      <Card>
+        <textarea value={pasteText} onChange={e=>setPasteText(e.target.value)}
+          placeholder="Paste document text here..."
+          style={{width:"100%",minHeight:220,padding:12,border:"2px solid #E2E8F0",borderRadius:10,fontSize:13,outline:"none",color:C.text,resize:"vertical"}}/>
+        <div style={{marginTop:10,display:"flex",gap:8}}>
+          <Btn color={C.indigo} disabled={!pasteText.trim()} onClick={()=>process(pasteText)}>Convert</Btn>
+          <Btn outline color={C.slate} onClick={()=>setPhase("idle")}>← Back</Btn>
+        </div>
+      </Card>
+    </div>
+  );
+
+  if(phase==="error") return(
+    <Card style={{textAlign:"center",padding:40,border:`2px solid ${C.rose}40`}}>
+      <div style={{fontSize:44}}>⚠️</div>
+      <p style={{fontWeight:800,color:C.rose,margin:"12px 0 4px"}}>Conversion Failed</p>
+      <p style={{color:C.muted,fontSize:13,marginBottom:20}}>{err}</p>
+      <Btn color={C.indigo} onClick={()=>{setPhase("idle");setErr("");}}>Try Again</Btn>
+    </Card>
+  );
+
+  if(phase==="done"&&result) return(
+    <div className="fadein">
+      <Heading title="✅ Conversion Complete!"
+        sub={`${result.docTitle||"Document"} · ${result.language||""} · ${result.fields?.length||0} fields found`}/>
+
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:10,marginBottom:16}}>
+        {[["Fields",result.fields?.length||0,C.indigo,"🔍"],
+          ["Required",result.fields?.filter(f=>f.required).length||0,C.rose,"⚠️"],
+          ["Type",result.docTitle||"Doc",C.teal,"📄"],
+          ["Language",result.language||"Auto",C.gold,"🌐"]
+        ].map(([l,v,c,i])=>(
+          <Card key={l} style={{textAlign:"center",padding:14}}>
+            <div style={{fontSize:22}}>{i}</div>
+            <div style={{fontSize:20,fontWeight:900,color:c,margin:"2px 0"}}>{v}</div>
+            <div style={{fontSize:11,color:C.muted}}>{l}</div>
+          </Card>
+        ))}
+      </div>
+
+      <Card style={{marginBottom:14}}>
+        <h4 style={{margin:"0 0 12px",fontSize:14,fontWeight:700,color:C.text}}>📋 Detected Fields</h4>
+        <div style={{display:"flex",flexDirection:"column",gap:7,maxHeight:300,overflowY:"auto"}}>
+          {(result.fields||[]).map((f,i)=>(
+            <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",
+              background:f.required?C.rose+"06":C.bg,border:`1px solid ${f.required?C.rose+"30":"#E2E8F0"}`,borderRadius:9}}>
+              <code style={{fontSize:11,color:C.indigo,background:C.indigo+"12",padding:"2px 7px",borderRadius:5}}>{`{{${f.key}}}`}</code>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:600,fontSize:13}}>{f.label}</div>
+                {f.sample&&<div style={{fontSize:11,color:C.muted}}>e.g. {f.sample}</div>}
+              </div>
+              <Badge color={TC[f.type]||C.slate}>{f.type}</Badge>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+        <Btn color={C.indigo} onClick={()=>onDone(result)} icon="✍️">Fill This Template</Btn>
+        <Btn outline color={C.slate} onClick={()=>{setPhase("idle");setResult(null);setLog([]);}}>Convert Another</Btn>
+      </div>
+    </div>
+  );
+
+  return null;
+}
+
+// ── Fill & Generate Module ───────────────────────────────────────────────────
+function Fill({template}) {
+  const tpl=template||DEFAULT_TPL;
+  const [vals,setVals]=useState(()=>{
+    const o={};(tpl.fields||[]).forEach(f=>{o[f.key]=f.sample||"";});return o;
+  });
+  const [errs,setErrs]=useState({});
+  const [done,setDone]=useState(false);
+  const [doc,setDoc]=useState("");
+
+  useEffect(()=>{
+    const o={};(tpl.fields||[]).forEach(f=>{o[f.key]=f.sample||"";});
+    setVals(o);setDone(false);setErrs({});
+  },[tpl]);
+
+  const TC={text:C.indigo,date:C.teal,number:C.gold,id:C.rose,address:C.slate,currency:C.green};
+  const TI={text:"📝",date:"📅",number:"🔢",id:"🪪",address:"🏠",currency:"💰"};
+
+  const groups={};
+  (tpl.fields||[]).forEach(f=>{
+    const g=f.type==="id"?"🪪 Identity":f.type==="date"?"📅 Dates":
+      (f.type==="currency"||f.type==="number")?"💰 Amounts":
+      f.type==="address"?"🏠 Address":"📝 Text Fields";
+    if(!groups[g])groups[g]=[];groups[g].push(f);
+  });
+  const GC={"🪪 Identity":C.rose,"📅 Dates":C.teal,"💰 Amounts":C.gold,"🏠 Address":C.slate,"📝 Text Fields":C.indigo};
+
+  const generate=()=>{
+    const e={};
+    (tpl.fields||[]).filter(f=>f.required).forEach(f=>{if(!vals[f.key]?.trim())e[f.key]="Required";});
+    if(Object.keys(e).length){setErrs(e);return;}
+    let d=tpl.templateText||"";
+    Object.entries(vals).forEach(([k,v])=>{d=d.replaceAll(`{{${k}}}`,v||`[${k}]`);});
+    setDoc(d);setDone(true);
+  };
+
+  const dlTXT=()=>{
+    const b=new Blob([doc],{type:"text/plain;charset=utf-8"});
+    const a=document.createElement("a");a.href=URL.createObjectURL(b);
+    a.download=(tpl.docTitle||"document").replace(/\s+/g,"_")+"_filled.txt";
+    document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(a.href);
+  };
+
+  const dlDOC=()=>{
+    const title=tpl.docTitle||"Document";
+    const html=`<!DOCTYPE html>
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+<head><meta charset="utf-8"><title>${title}</title>
+<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View></w:WordDocument></xml><![endif]-->
+<style>body{font-family:"Times New Roman",serif;font-size:12pt;line-height:1.9;margin:2.5cm;color:#000}
+h1{font-size:16pt;text-align:center;font-weight:bold;margin-bottom:20pt}p{margin:5pt 0}</style>
+</head><body>
+<h1>${title}</h1>
+${doc.split("\n").map(l=>`<p>${l||"&nbsp;"}</p>`).join("\n")}
+</body></html>`;
+    const b=new Blob([html],{type:"application/msword;charset=utf-8"});
+    const a=document.createElement("a");a.href=URL.createObjectURL(b);
+    a.download=(tpl.docTitle||"document").replace(/\s+/g,"_")+"_filled.doc";
+    document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(a.href);
+  };
+
+  const dlPDF=()=>{
+    const title=tpl.docTitle||"Document";
+    const w=window.open("","_blank");
+    if(!w){alert("Allow popups and try again");return;}
+    w.document.write(`<!DOCTYPE html><html><head><title>${title}</title>
+<style>body{font-family:"Times New Roman",serif;font-size:12pt;line-height:1.9;margin:2cm}
+h1{font-size:16pt;text-align:center;font-weight:bold;margin-bottom:18pt}p{margin:5pt 0}
+@media print{body{margin:1.5cm}}</style></head><body>
+<h1>${title}</h1>
+${doc.split("\n").map(l=>`<p>${l||"&nbsp;"}</p>`).join("\n")}
+<script>window.onload=()=>window.print()<\/script>
+</body></html>`);
+    w.document.close();
+  };
+
+  return(
+    <div className="fadein">
+      <Heading title={`✍️ Fill: ${tpl.docTitle||"Document"}`}
+        sub={`${tpl.fields?.length} fields · ${tpl.language||""}`}/>
+
+      {Object.entries(groups).map(([gname,gfields])=>(
+        <Card key={gname} style={{marginBottom:14,borderLeft:`4px solid ${GC[gname]||C.indigo}`}}>
+          <h4 style={{margin:"0 0 14px",fontSize:13,fontWeight:800,color:GC[gname]||C.indigo}}>{gname}</h4>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:12}}>
+            {gfields.map(f=>(
+              <div key={f.key}>
+                <label style={{fontSize:11,fontWeight:700,color:C.muted,textTransform:"uppercase",display:"flex",alignItems:"center",gap:3}}>
+                  {TI[f.type]||"📝"} {f.label||f.key.replace(/_/g," ")}
+                  {f.required&&<span style={{color:C.rose}}>*</span>}
+                </label>
+                <input value={vals[f.key]||""} onChange={e=>{setVals(p=>({...p,[f.key]:e.target.value}));setErrs(p=>({...p,[f.key]:""}));}}
+                  placeholder={f.sample||""}
+                  style={{display:"block",width:"100%",marginTop:4,padding:"8px 11px",
+                    border:`2px solid ${errs[f.key]?C.rose:"#E2E8F0"}`,borderRadius:8,fontSize:13,outline:"none",
+                    boxSizing:"border-box",color:C.text}}
+                  onFocus={e=>{e.target.style.borderColor=TC[f.type]||C.indigo;}}
+                  onBlur={e=>{e.target.style.borderColor=errs[f.key]?C.rose:"#E2E8F0";}}/>
+                {errs[f.key]&&<span style={{color:C.rose,fontSize:11}}>⚠ {errs[f.key]}</span>}
+              </div>
+            ))}
+          </div>
+        </Card>
+      ))}
+
+      <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:16}}>
+        <Btn color={C.indigo} onClick={generate} icon="📄">Generate DOCX</Btn>
+        <Btn color={C.rose} onClick={()=>{generate();}} icon="📋">Generate PDF</Btn>
+        <Btn outline color={C.slate} onClick={()=>{const o={};(tpl.fields||[]).forEach(f=>{o[f.key]="";});setVals(o);setDone(false);}}>Clear</Btn>
+      </div>
+
+      {done&&(
+        <div className="fadein">
+          <Card style={{background:C.green+"0A",border:`2px solid ${C.green}40`,marginBottom:14}}>
+            <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+              <span style={{fontSize:32}}>✅</span>
+              <div style={{flex:1}}>
+                <p style={{fontWeight:800,color:C.green,margin:"0 0 2px",fontSize:15}}>Document Ready!</p>
+                <p style={{color:C.muted,fontSize:13,margin:0}}>{(tpl.docTitle||"document").replace(/\s+/g,"_")}_filled</p>
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                <Btn small color={C.indigo} onClick={dlDOC}>⬇ DOCX</Btn>
+                <Btn small color={C.rose} onClick={dlPDF}>🖨 PDF</Btn>
+                <Btn small outline color={C.slate} onClick={dlTXT}>TXT</Btn>
+              </div>
+            </div>
+          </Card>
+          <Card style={{padding:0,overflow:"hidden"}}>
+            <div style={{padding:"9px 16px",background:C.bg,borderBottom:"1px solid #E2E8F0",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontWeight:700,fontSize:13}}>📄 Preview</span>
+              <Btn small outline color={C.slate} onClick={()=>{navigator.clipboard?.writeText(doc);}}>📋 Copy</Btn>
+            </div>
+            <pre style={{padding:18,margin:0,fontFamily:"'Courier New',monospace",fontSize:12,
+              lineHeight:1.9,color:C.text,whiteSpace:"pre-wrap",maxHeight:420,overflowY:"auto"}}>
+              {doc}
+            </pre>
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Template Editor ──────────────────────────────────────────────────────────
+function Editor({template,onUpdate}) {
+  const tpl=template||DEFAULT_TPL;
+  const [txt,setTxt]=useState(tpl.templateText||"");
+  const [newKey,setNewKey]=useState("");
+  const taRef=useRef();
+
+  useEffect(()=>{if(tpl.templateText)setTxt(tpl.templateText);},[tpl]);
+
+  const tags=[...txt.matchAll(/\{\{([A-Z0-9_]+)\}\}/g)].map(m=>m[1]).filter((v,i,a)=>a.indexOf(v)===i);
+
+  const insert=k=>{
+    const el=taRef.current;if(!el)return;
+    const s=el.selectionStart,e=el.selectionEnd;
+    const tag=`{{${k.toUpperCase().replace(/\s+/g,"_")}}}`;
+    const n=txt.slice(0,s)+tag+txt.slice(e);
+    setTxt(n);if(onUpdate)onUpdate({...tpl,templateText:n});
+  };
+
+  const save=()=>{if(onUpdate)onUpdate({...tpl,templateText:txt});alert("Template saved!");};
+
+  const dl=()=>{
+    const b=new Blob([txt],{type:"text/plain"});
+    const a=document.createElement("a");a.href=URL.createObjectURL(b);
+    a.download="template.txt";document.body.appendChild(a);a.click();document.body.removeChild(a);
+  };
+
+  return(
+    <div className="fadein">
+      <Heading title="📝 Template Editor" sub="Edit template text. Use {{FIELD_NAME}} for all variable fields."/>
+      <div style={{display:"flex",gap:14,flexWrap:"wrap"}}>
+        <div style={{flex:"1 1 300px"}}>
+          <Card style={{padding:0,overflow:"hidden",marginBottom:12}}>
+            <div style={{padding:"9px 14px",background:C.bg,borderBottom:"1px solid #E2E8F0",display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+              <span style={{fontWeight:700,fontSize:13,flex:1}}>{tpl.docTitle||"Template"}</span>
+              <Btn small color={C.indigo} onClick={save}>💾 Save</Btn>
+              <Btn small outline color={C.slate} onClick={dl}>⬇ Download</Btn>
+            </div>
+            <textarea ref={taRef} value={txt} onChange={e=>{setTxt(e.target.value);if(onUpdate)onUpdate({...tpl,templateText:e.target.value});}}
+              style={{width:"100%",minHeight:400,padding:16,border:"none",fontFamily:"'Courier New',monospace",
+                fontSize:12,lineHeight:1.8,resize:"vertical",outline:"none",color:C.text,boxSizing:"border-box"}}/>
+          </Card>
+          <Card>
+            <p style={{fontWeight:700,fontSize:13,margin:"0 0 8px"}}>➕ Insert Placeholder</p>
+            <div style={{display:"flex",gap:8}}>
+              <input value={newKey} onChange={e=>setNewKey(e.target.value)} placeholder="e.g. WITNESS_NAME"
+                style={{flex:1,padding:"8px 11px",border:"2px solid #E2E8F0",borderRadius:8,fontSize:13,outline:"none"}}/>
+              <Btn small color={C.indigo} onClick={()=>{if(newKey){insert(newKey);setNewKey("");}}}>Insert</Btn>
+            </div>
+          </Card>
+        </div>
+
+        <div style={{width:240,minWidth:200}}>
+          <Card style={{marginBottom:12}}>
+            <p style={{fontWeight:700,fontSize:13,margin:"0 0 10px"}}>📋 Fields ({tags.length})</p>
+            <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:280,overflowY:"auto"}}>
+              {tags.map(t=>(
+                <div key={t} style={{display:"flex",alignItems:"center",gap:6}}>
+                  <code style={{fontSize:11,color:C.indigo,background:C.indigo+"10",padding:"2px 7px",borderRadius:5,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{`{{${t}}}`}</code>
+                  <button onClick={()=>insert(t)} style={{background:"none",border:"none",color:C.slate,cursor:"pointer",fontSize:13}}>+</button>
+                </div>
+              ))}
+              {!tags.length&&<p style={{color:C.muted,fontSize:12,margin:0}}>No {{FIELDS}} yet</p>}
+            </div>
+          </Card>
+          <Card>
+            <p style={{fontWeight:700,fontSize:13,margin:"0 0 8px"}}>💡 Tips</p>
+            {["Use {{CAPS_SNAKE}}","Split: SELLER_NAME, AGE","Dates: {{DEED_DATE}}","Amounts: {{SALE_VALUE}}","IDs: {{AADHAAR_NO}}"].map((t,i)=>(
+              <div key={i} style={{fontSize:11,color:C.muted,padding:"3px 0",borderBottom:"1px solid #F0F4FF"}}>{t}</div>
+            ))}
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── AI Chat ──────────────────────────────────────────────────────────────────
+function Chat({template,apiKey}) {
+  const tpl=template||DEFAULT_TPL;
+  const [msgs,setMsgs]=useState([{role:"ai",text:`Hello! I am DocAuto AI Assistant. I can help you modify your template "${tpl.docTitle||"document"}". Ask me anything in Telugu, English, Hindi or any language!`}]);
+  const [input,setInput]=useState("");
+  const [loading,setLoading]=useState(false);
+  const endRef=useRef();
+
+  useEffect(()=>{endRef.current?.scrollIntoView({behavior:"smooth"});},[msgs,loading]);
+
+  const QUICK=["What fields does this template have?","Add a witness section","Split address into parts","Make all name fields required","How to add more placeholders?"];
+
+  const send=async(text)=>{
+    if(!text.trim())return;
+    setMsgs(p=>[...p,{role:"user",text}]);setInput("");setLoading(true);
+    try{
+      const r=await fetch("https://api.anthropic.com/v1/messages",{
+        method:"POST",
+        headers:{"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01"},
+        body:JSON.stringify({
+          model:"claude-sonnet-4-20250514",max_tokens:800,
+          system:`You are DocAuto AI, a helpful template assistant for legal document automation in India.
+Current template: "${tpl.docTitle||"document"}" with fields: ${(tpl.fields||[]).map(f=>f.key).join(", ")}.
+Help users modify templates. Suggest {{PLACEHOLDER}} syntax. Support Telugu, English, Hindi. Keep answers concise.`,
+          messages:[
+            ...msgs.map(m=>({role:m.role==="ai"?"assistant":"user",content:m.text})),
+            {role:"user",content:text}
+          ]
+        })
+      });
+      const d=await r.json();
+      setMsgs(p=>[...p,{role:"ai",text:d.content?.[0]?.text||"Sorry, try again."}]);
+    }catch{setMsgs(p=>[...p,{role:"ai",text:"Network error. Please try again."}]);}
+    setLoading(false);
+  };
+
+  return(
+    <div className="fadein">
+      <Heading title="🤖 AI Assistant" sub="Ask in any language — Telugu, English, Hindi..."/>
+      <Card style={{display:"flex",flexDirection:"column",height:480}}>
+        <div style={{flex:1,overflowY:"auto",padding:14,display:"flex",flexDirection:"column",gap:10}}>
+          {msgs.map((m,i)=>(
+            <div key={i} style={{display:"flex",gap:8,flexDirection:m.role==="user"?"row-reverse":"row"}}>
+              <div style={{width:30,height:30,borderRadius:"50%",background:m.role==="ai"?C.indigo:C.navy,
+                display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>
+                {m.role==="ai"?"🤖":"👤"}
+              </div>
+              <div style={{background:m.role==="ai"?C.bg:C.indigo,color:m.role==="ai"?C.text:"#fff",
+                borderRadius:m.role==="ai"?"4px 14px 14px 14px":"14px 4px 14px 14px",
+                padding:"9px 13px",maxWidth:"78%",fontSize:13,lineHeight:1.6,whiteSpace:"pre-wrap"}}>
+                {m.text}
+              </div>
+            </div>
+          ))}
+          {loading&&(
+            <div style={{display:"flex",gap:8}}>
+              <div style={{width:30,height:30,borderRadius:"50%",background:C.indigo,display:"flex",alignItems:"center",justifyContent:"center"}}>🤖</div>
+              <div style={{background:C.bg,borderRadius:"4px 14px 14px 14px",padding:"10px 14px",display:"flex",gap:4}}>
+                {[0,1,2].map(i=><span key={i} style={{width:7,height:7,borderRadius:"50%",background:C.indigo,display:"inline-block",animation:`bounce 1s ${i*0.2}s infinite`}}/>)}
+              </div>
+            </div>
+          )}
+          <div ref={endRef}/>
+        </div>
+        <div style={{padding:"6px 12px",borderTop:"1px solid #E2E8F0",display:"flex",gap:6,overflowX:"auto"}}>
+          {QUICK.map(q=>(
+            <span key={q} onClick={()=>send(q)} style={{whiteSpace:"nowrap",fontSize:11,color:C.indigo,
+              background:C.indigo+"12",padding:"3px 9px",borderRadius:20,cursor:"pointer",fontWeight:600}}>{q}</span>
+          ))}
+        </div>
+        <div style={{padding:"10px 14px",borderTop:"1px solid #E2E8F0",display:"flex",gap:8}}>
+          <input value={input} onChange={e=>setInput(e.target.value)}
+            onKeyDown={e=>e.key==="Enter"&&!loading&&send(input)}
+            placeholder="Ask anything..." disabled={loading}
+            style={{flex:1,padding:"9px 13px",border:"2px solid #E2E8F0",borderRadius:9,fontSize:13,outline:"none"}}/>
+          <Btn onClick={()=>send(input)} disabled={loading||!input.trim()} color={C.indigo}>Send</Btn>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ── Batch Module ─────────────────────────────────────────────────────────────
+function Batch({template}) {
+  const tpl=template||DEFAULT_TPL;
+  const [rows]=useState([
+    {SELLER_NAME:"Ramesh Kumar",BUYER_NAME:"Suresh Rao",DEED_DATE:"01-Jan-2025",SALE_VALUE:"31,50,000"},
+    {SELLER_NAME:"Lakshmi Devi",BUYER_NAME:"Venkat Reddy",DEED_DATE:"15-Feb-2025",SALE_VALUE:"45,00,000"},
+    {SELLER_NAME:"Ravi Shankar",BUYER_NAME:"Priya Kumari",DEED_DATE:"20-Mar-2025",SALE_VALUE:"28,75,000"},
+  ]);
+  const [prog,setProg]=useState(null);
+  const [done,setDone]=useState(false);
+
+  const run=()=>{
+    setProg(0);setDone(false);
+    const iv=setInterval(()=>{
+      setProg(p=>{if(p>=rows.length){clearInterval(iv);setDone(true);return p;}return p+1;});
+    },700);
+  };
+
+  const cols=["SELLER_NAME","BUYER_NAME","DEED_DATE","SALE_VALUE"];
+
+  return(
+    <div className="fadein">
+      <Heading title="⚡ Batch Generate" sub="Generate multiple documents at once from a data file."/>
+      <Card style={{marginBottom:14}}>
+        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:14,flexWrap:"wrap"}}>
+          <div style={{flex:1}}>
+            <p style={{fontWeight:700,margin:"0 0 2px"}}>📊 Upload CSV / Excel</p>
+            <p style={{color:C.muted,fontSize:13,margin:0}}>One row = one document</p>
+          </div>
+          <Btn color={C.indigo}>⬆ Upload CSV</Btn>
+        </div>
+        <div style={{overflowX:"auto"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+            <thead>
+              <tr style={{background:C.bg}}>
+                {["#",...cols,"Status"].map(h=>(
+                  <th key={h} style={{padding:"8px 10px",textAlign:"left",fontWeight:700,color:C.muted,fontSize:11,textTransform:"uppercase"}}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r,i)=>(
+                <tr key={i} style={{borderTop:"1px solid #E2E8F0"}}>
+                  <td style={{padding:"8px 10px",color:C.muted}}>{i+1}</td>
+                  {cols.map(c=><td key={c} style={{padding:"8px 10px"}}>{r[c]||"—"}</td>)}
+                  <td style={{padding:"8px 10px"}}>
+                    {done||(prog!==null&&i<prog)?<Badge color={C.green}>✅ Done</Badge>
+                      :prog!==null&&i===prog?<Badge color={C.amber}>⏳ Processing</Badge>
+                      :<Badge color={C.slate}>Pending</Badge>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+      {prog!==null&&!done&&(
+        <Card style={{marginBottom:14}}>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
+            <span style={{fontWeight:700}}>Generating…</span>
+            <span style={{color:C.muted,fontSize:13}}>{prog}/{rows.length}</span>
+          </div>
+          <div style={{background:"#E2E8F0",borderRadius:99,height:8}}>
+            <div style={{background:C.indigo,width:`${(prog/rows.length)*100}%`,height:8,borderRadius:99,transition:"width .5s"}}/>
+          </div>
+        </Card>
+      )}
+      <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+        <Btn color={C.indigo} onClick={run} disabled={prog!==null&&!done}>⚡ Generate All ({rows.length})</Btn>
+        {done&&<Btn color={C.green}>⬇ Download ZIP</Btn>}
+        {done&&<Btn outline color={C.slate} onClick={()=>{setProg(null);setDone(false);}}>Reset</Btn>}
+      </div>
+      {done&&(
+        <Card style={{marginTop:14,background:C.green+"0A",border:`2px solid ${C.green}30`}}>
+          <p style={{fontWeight:800,color:C.green,margin:"0 0 2px"}}>✅ {rows.length} documents generated!</p>
+          <p style={{color:C.muted,margin:0,fontSize:13}}>Click Download ZIP to save all files.</p>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ── Dashboard ────────────────────────────────────────────────────────────────
+function Dashboard() {
+  const stats=[
+    ["Generated","1,247",C.indigo,"📄","+12% this month"],
+    ["Templates","23",C.teal,"📝","+3 new"],
+    ["Credits","653",C.gold,"⚡","Remaining"],
+    ["Languages","5",C.green,"🌐","Supported"],
+  ];
+  const recent=[
+    {name:"SaleDeed_Ramesh.doc",type:"Sale Deed",lang:"Telugu",time:"2 min ago"},
+    {name:"Affidavit_Suresh.doc",type:"Affidavit",lang:"Telugu",time:"1 hr ago"},
+    {name:"GPA_Lakshmi.doc",type:"GPA",lang:"English",time:"3 hr ago"},
+  ];
+  return(
+    <div className="fadein">
+      <Heading title="📊 Dashboard" sub="Your document automation activity."/>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:10,marginBottom:16}}>
+        {stats.map(([l,v,c,i,s])=>(
+          <Card key={l} style={{textAlign:"center",padding:14}}>
+            <div style={{fontSize:26}}>{i}</div>
+            <div style={{fontSize:24,fontWeight:900,color:c,margin:"4px 0"}}>{v}</div>
+            <div style={{fontSize:11,color:C.muted}}>{l}</div>
+            <div style={{marginTop:6}}><Badge color={c}>{s}</Badge></div>
+          </Card>
+        ))}
+      </div>
+      <Card>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+          <h3 style={{margin:0,fontSize:15,fontWeight:800,color:C.text}}>Recent Documents</h3>
+        </div>
+        {recent.map((r,i)=>(
+          <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"11px 0",borderBottom:i<recent.length-1?"1px solid #F0F4FF":"none"}}>
+            <span style={{fontSize:18}}>📄</span>
+            <div style={{flex:1}}>
+              <div style={{fontWeight:600,fontSize:13}}>{r.name}</div>
+              <div style={{color:C.muted,fontSize:12}}>{r.type} · {r.lang}</div>
+            </div>
+            <span style={{color:C.muted,fontSize:12}}>{r.time}</span>
+            <Badge color={C.green}>✓ Ready</Badge>
+          </div>
+        ))}
+      </Card>
+    </div>
+  );
+}
+
+// ── NAV config ───────────────────────────────────────────────────────────────
+const NAV=[
+  {id:"convert",icon:"🔄",label:"Convert"},
+  {id:"fill",   icon:"✍️",label:"Fill"},
+  {id:"editor", icon:"📝",label:"Editor"},
+  {id:"chat",   icon:"🤖",label:"AI Chat"},
+  {id:"batch",  icon:"⚡",label:"Batch"},
+  {id:"dash",   icon:"📊",label:"Dashboard"},
+];
+
+// ── ROOT APP ─────────────────────────────────────────────────────────────────
+function App() {
+  const [apiKey,setApiKey]=useState(()=>localStorage.getItem("DOCAUTO_KEY")||"");
+  const [active,setActive]=useState("convert");
+  const [sidebar,setSidebar]=useState(true);
+  const [template,setTemplate]=useState(null);
+
+  if(!apiKey) return <ApiSetup onDone={k=>setApiKey(k)}/>;
+
+  const modules={
+    convert:()=><Convert apiKey={apiKey} onDone={r=>{setTemplate(r);setActive("fill");}}/>,
+    fill:   ()=><Fill template={template}/>,
+    editor: ()=><Editor template={template} onUpdate={setTemplate}/>,
+    chat:   ()=><Chat template={template} apiKey={apiKey}/>,
+    batch:  ()=><Batch template={template}/>,
+    dash:   ()=><Dashboard/>,
+  };
+  const Module=modules[active]||modules.convert;
+
+  return(
+    <div style={{display:"flex",height:"100vh",background:C.bg,overflow:"hidden"}}>
+
+      {/* Sidebar – desktop */}
+      <div id="sidebar" style={{width:sidebar?210:56,background:C.navy,display:"flex",flexDirection:"column",
+        transition:"width .2s",flexShrink:0,overflow:"hidden"}}>
+        <div style={{padding:"18px 14px",borderBottom:"1px solid #ffffff15"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <div style={{width:34,height:34,borderRadius:10,background:`linear-gradient(135deg,${C.indigo},${C.gold})`,
+              display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,flexShrink:0}}>📋</div>
+            {sidebar&&<div>
+              <div style={{color:"#fff",fontWeight:900,fontSize:14,lineHeight:1}}>DocAuto AI</div>
+              <div style={{color:"#6B84F5",fontSize:10}}>Document Automation</div>
+            </div>}
+          </div>
+        </div>
+        <nav style={{flex:1,padding:"10px 6px",overflowY:"auto"}}>
+          {NAV.map(n=>(
+            <button key={n.id} onClick={()=>setActive(n.id)} style={{
+              width:"100%",display:"flex",alignItems:"center",gap:8,
+              padding:"9px 10px",marginBottom:2,borderRadius:9,border:"none",cursor:"pointer",
+              background:active===n.id?C.indigo:"transparent",
+              color:active===n.id?"#fff":"#8899BB",
+              fontWeight:active===n.id?700:500,fontSize:13,transition:"all .15s",textAlign:"left",
+            }}>
+              <span style={{fontSize:15,flexShrink:0}}>{n.icon}</span>
+              {sidebar&&<span style={{whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{n.label}</span>}
+            </button>
+          ))}
+        </nav>
+        {sidebar&&(
+          <div style={{padding:"10px 14px",borderTop:"1px solid #ffffff15"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <div style={{width:30,height:30,borderRadius:"50%",background:C.indigo,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:13,fontWeight:700}}>V</div>
+              <div>
+                <div style={{color:"#fff",fontSize:12,fontWeight:600}}>Vijaya Kumar</div>
+                <div style={{color:"#6B84F5",fontSize:10}}>Professional Plan</div>
+              </div>
+            </div>
+            <button onClick={()=>{localStorage.removeItem("DOCAUTO_KEY");setApiKey("");}}
+              style={{marginTop:10,background:"none",border:"1px solid #F43F5E40",color:"#F43F5E",
+                borderRadius:7,padding:"4px 10px",fontSize:11,cursor:"pointer",width:"100%"}}>
+              🔑 Change API Key
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Main area */}
+      <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+        {/* Top bar */}
+        <div id="topbar" style={{background:"#fff",borderBottom:"1px solid #E2E8F0",padding:"0 20px",height:52,
+          display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
+          <button onClick={()=>setSidebar(p=>!p)}
+            style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:C.slate}}>☰</button>
+          <span style={{fontWeight:800,fontSize:15,color:C.text,flex:1}}>
+            {NAV.find(n=>n.id===active)?.icon} {NAV.find(n=>n.id===active)?.label}
+          </span>
+          {template&&<Badge color={C.teal}>{template.fields?.length||0} fields</Badge>}
+          <Badge color={C.gold}>Pro</Badge>
+        </div>
+
+        {/* Content */}
+        <div id="mainContent" style={{flex:1,overflowY:"auto",padding:20}}>
+          <Module/>
+        </div>
+      </div>
+
+      {/* Bottom nav – mobile */}
+      <div id="bottomNav" style={{justifyContent:"space-around",paddingBottom:"env(safe-area-inset-bottom)"}}>
+        {NAV.map(n=>(
+          <button key={n.id} onClick={()=>setActive(n.id)} style={{
+            background:"none",border:"none",display:"flex",flexDirection:"column",alignItems:"center",
+            gap:2,padding:"6px 8px",cursor:"pointer",
+            color:active===n.id?"#4361EE":"#6B84F5",
+            borderTop:active===n.id?"2px solid #4361EE":"2px solid transparent",
+          }}>
+            <span style={{fontSize:18}}>{n.icon}</span>
+            <span style={{fontSize:9,fontWeight:active===n.id?700:400}}>{n.label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
