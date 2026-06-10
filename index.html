@@ -263,10 +263,12 @@ ${text.slice(0,6000)}`;
     if(!r.ok)throw new Error(`API error ${r.status}`);
     const d=await r.json();
     const raw=d.choices?.[0]?.message?.content||"";
-    addLog("📦 "+raw.slice(0,100));
+    addLog("📦 "+raw.slice(0,120));
     let jsonStr = raw.replace(/```json|```/g,"").trim();
-    const m = jsonStr.match(/\{[\s\S]*\}/s);
-    if(m) jsonStr = m[0];
+    // Find the JSON object in the response
+    const startIdx = jsonStr.indexOf('{');
+    const endIdx = jsonStr.lastIndexOf('}');
+    if(startIdx !== -1 && endIdx !== -1) jsonStr = jsonStr.slice(startIdx, endIdx+1);
     const parsed=JSON.parse(jsonStr);
     addLog("🔑 Field0: "+JSON.stringify(parsed.fields?.[0]));
     if(parsed.fields && Array.isArray(parsed.fields)){
@@ -485,19 +487,24 @@ function Fill({template}) {
 
   const dlDOC=()=>{
     const title=tpl.docTitle||"Document";
-    const html=`<!DOCTYPE html>
-<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
-<head><meta charset="utf-8"><title>${title}</title>
-<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View></w:WordDocument></xml><![endif]-->
-<style>body{font-family:"Times New Roman",serif;font-size:12pt;line-height:1.9;margin:2.5cm;color:#000}
-h1{font-size:16pt;text-align:center;font-weight:bold;margin-bottom:20pt}p{margin:5pt 0}</style>
-</head><body>
-<h1>${title}</h1>
-${doc.split("\n").map(l=>`<p>${l||"&nbsp;"}</p>`).join("\n")}
-</body></html>`;
-    const b=new Blob([html],{type:"application/msword;charset=utf-8"});
+    const lines=doc.split("\n");
+    const rtfLines=lines.map(l=>{
+      if(!l.trim())return "\\par";
+      // Escape RTF special chars
+      const escaped=l.replace(/\\/g,"\\\\").replace(/\{/g,"\\{").replace(/\}/g,"\\}");
+      return "\\par "+escaped;
+    }).join("\n");
+    const rtf=`{\\rtf1\\ansi\\deff0
+{\\fonttbl{\\f0\\froman\\fcharset0 Times New Roman;}{\\f1\\fswiss Arial;}}
+{\\colortbl ;\\red0\\green0\\blue0;}
+\\paperw12240\\paperh15840\\margl1800\\margr1800\\margt1440\\margb1440
+\\f0\\fs24\\cf1
+{\\b\\fs28\\qc ${title}\\par\\par}
+${rtfLines}
+}`;
+    const b=new Blob([rtf],{type:"application/rtf;charset=utf-8"});
     const a=document.createElement("a");a.href=URL.createObjectURL(b);
-    a.download=(tpl.docTitle||"document").replace(/\s+/g,"_")+"_filled.doc";
+    a.download=(tpl.docTitle||"document").replace(/\s+/g,"_")+"_filled.rtf";
     document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(a.href);
   };
 
