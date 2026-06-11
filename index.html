@@ -562,7 +562,7 @@ ${text}`;
     addLog(`🌐 Gemini API — single-shot (large doc support)...`);
     const prompt = buildPrompt(text, mode, existingPlaceholders);
     let d;
-    for(let attempt=0; attempt<3; attempt++){
+    for(let attempt=0; attempt<5; attempt++){
       const r = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
         { method:"POST",
@@ -574,8 +574,9 @@ ${text}`;
         }
       );
       if(r.status===429){
-        const wait = attempt===0?5000:15000;
-        addLog(`⏳ Gemini rate limit — waiting ${wait/1000}s...`);
+        const waits = [10000, 20000, 30000, 45000];
+        const wait = waits[attempt] || 60000;
+        addLog(`⏳ Gemini rate limit — waiting ${wait/1000}s (retry ${attempt+1}/4)...`);
         await new Promise(res=>setTimeout(res,wait));
         continue;
       }
@@ -702,15 +703,35 @@ ${text}`;
   const callAI = async(fullText, mode, existingPlaceholders) => {
     const {lang, useGemini} = detectLanguage(fullText);
 
-    // Use Gemini for regional languages (single-shot — no chunking needed)
+    // Use Gemini for regional languages
+    // Gemini 2.0-flash supports 1M tokens — chunk only if very large (>30000 chars)
     if(useGemini && geminiKey){
-      addLog(`🔍 Detected language: ${lang} → using Gemini API (single-shot)`);
-      addLog(`📊 Document: ${fullText.length} chars — sending in full`);
-      const cleanText = sanitizeTextForAI(fullText);
-      const raw = await callGemini(cleanText, mode, existingPlaceholders);
-      const parsed = parseAIResponse(raw);
-      addLog(`✅ Gemini found ${parsed.fields?.length||0} fields`);
-      return parsed;
+      const GEMINI_CHUNK = 30000;
+      if(fullText.length <= GEMINI_CHUNK){
+        addLog(`🔍 Detected language: ${lang} → using Gemini API (single-shot)`);
+        addLog(`📊 Document: ${fullText.length} chars — sending in full`);
+        const cleanText = sanitizeTextForAI(fullText);
+        const raw = await callGemini(cleanText, mode, existingPlaceholders);
+        const parsed = parseAIResponse(raw);
+        addLog(`✅ Gemini found ${parsed.fields?.length||0} fields`);
+        return parsed;
+      } else {
+        // Very large doc — split into 2 chunks for Gemini
+        const chunks = splitIntoChunks(fullText, GEMINI_CHUNK);
+        const numChunks = Math.min(chunks.length, 2);
+        addLog(`🔍 Detected language: ${lang} → Gemini (${numChunks} chunks for large doc)`);
+        const results = [];
+        for(let i=0; i<numChunks; i++){
+          addLog(`🌐 Gemini chunk ${i+1}/${numChunks}...`);
+          const cleanChunk = sanitizeTextForAI(chunks[i]);
+          const raw = await callGemini(cleanChunk, mode, existingPlaceholders);
+          results.push(parseAIResponse(raw));
+          if(i < numChunks-1) await new Promise(r=>setTimeout(r,5000));
+        }
+        const merged = mergeAiResults(results);
+        addLog(`✅ Gemini merged: ${merged.fields.length} fields`);
+        return merged;
+      }
     }
 
     // Fallback: if Gemini key missing but non-English, warn and use Groq
