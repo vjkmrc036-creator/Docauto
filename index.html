@@ -474,6 +474,38 @@ function sanitizeTextForAI(text){
     .trim();
 }
 
+// ── Telugu → Tanglish transliteration map ───────────────────────────────────
+const TELUGU_MAP = [
+  // Vowels
+  ['అ','a'],['ఆ','aa'],['ఇ','i'],['ఈ','ee'],['ఉ','u'],['ఊ','oo'],
+  ['ఎ','e'],['ఏ','ae'],['ఐ','ai'],['ఒ','o'],['ఓ','oo'],['ఔ','au'],
+  // Consonants
+  ['క','ka'],['ఖ','kha'],['గ','ga'],['ఘ','gha'],['చ','cha'],['జ','ja'],
+  ['ట','ta'],['డ','da'],['త','tha'],['ద','dha'],['న','na'],['ప','pa'],
+  ['ఫ','pha'],['బ','ba'],['భ','bha'],['మ','ma'],['య','ya'],['ర','ra'],
+  ['ల','la'],['వ','va'],['శ','sha'],['ష','sha'],['స','sa'],['హ','ha'],
+  ['ళ','la'],['ఱ','ra'],['క్ష','ksha'],['జ్ఞ','gna'],
+  // Matras (vowel signs)
+  ['ా','aa'],['ి','i'],['ీ','ee'],['ు','u'],['ూ','oo'],['ె','e'],
+  ['ే','ae'],['ై','ai'],['ొ','o'],['ో','oo'],['ౌ','au'],['ం','m'],
+  ['ః','h'],['్',''],['ఁ','n'],
+  // Numbers
+  ['౦','0'],['౧','1'],['౨','2'],['౩','3'],['౪','4'],
+  ['౫','5'],['౬','6'],['౭','7'],['౮','8'],['౯','9'],
+];
+
+function teluguToTanglish(text){
+  // Check if text has Telugu chars
+  if(!/[ఀ-౿]/.test(text)) return text;
+  let result = text;
+  // Sort by length descending to match longer sequences first
+  const sorted = [...TELUGU_MAP].sort((a,b)=>b[0].length-a[0].length);
+  for(const [tel, eng] of sorted){
+    result = result.split(tel).join(eng);
+  }
+  return result;
+}
+
 function splitIntoChunks(text, chunkSize){
   if(text.length <= chunkSize) return [text];
   const chunks = [];
@@ -751,10 +783,14 @@ ${text}`;
       addLog(`🔍 Detected: ${lang} → Groq`);
     }
 
-    // Groq: chunk large documents
-    const chunks = splitIntoChunks(fullText, CHUNK_SIZE);
+    // Groq: convert Telugu→Tanglish first (reduces tokens, improves JSON output)
+    const groqText = useGemini ? teluguToTanglish(fullText) : fullText;
+    if(useGemini && groqText !== fullText){
+      addLog(`🔤 Telugu→Tanglish conversion for Groq (saves tokens)`);
+    }
+    const chunks = splitIntoChunks(groqText, CHUNK_SIZE);
     const numChunks = Math.min(chunks.length, MAX_CHUNKS);
-    addLog(`📊 Document: ${fullText.length} chars → ${chunks.length} chunks (analyzing ${numChunks})`);
+    addLog(`📊 Document: ${groqText.length} chars → ${chunks.length} chunks (analyzing ${numChunks})`);
     const results = [];
     for(let i=0; i<numChunks; i++){
       const cleanChunk = sanitizeTextForAI(chunks[i]);
