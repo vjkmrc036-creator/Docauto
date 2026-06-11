@@ -7,6 +7,9 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/SheetJS/0.18.5/xlsx.full.min.js"></script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:'Segoe UI',Inter,sans-serif;background:#F0F4FF;overflow:hidden;height:100vh}
@@ -91,7 +94,6 @@ function ApiSetup({onDone}) {
     if(!k.startsWith("gsk_")){setErr("Key must start with gsk_...");return;}
     if(k.length<40){setErr("Key looks too short — please paste the full key");return;}
     setErr("");
-    localStorage.setItem("DOCAUTO_KEY",k);
     onDone(k);
   };
 
@@ -127,15 +129,15 @@ function ApiSetup({onDone}) {
         </Btn>
         <div style={{marginTop:20,padding:14,background:"#0B143780",borderRadius:10,border:"1px solid #4361EE30"}}>
           <p style={{color:"#94A3B8",fontSize:12,lineHeight:1.7,margin:0}}>
-            <strong style={{color:"#6B84F5"}}>How to get a free API key:</strong><br/>
-            1. Go to <strong style={{color:"#F4A828"}}>console.anthropic.com</strong><br/>
+            <strong style={{color:"#6B84F5"}}>How to get a free Groq API key:</strong><br/>
+            1. Go to <strong style={{color:"#F4A828"}}>console.groq.com</strong><br/>
             2. Sign up → API Keys → Create Key<br/>
-            3. Copy the key (starts with sk-ant-...)<br/>
-            4. New accounts get <strong style={{color:"#22C55E"}}>$5 free credits</strong>
+            3. Copy the key (starts with gsk_...)<br/>
+            4. Groq offers <strong style={{color:"#22C55E"}}>generous free usage</strong>
           </p>
         </div>
         <p style={{color:"#475569",fontSize:11,textAlign:"center",marginTop:12}}>
-          🔒 Key saved locally on your device only
+          🔒 Key kept only in this browser tab&apos;s memory (not saved to disk)
         </p>
       </div>
     </div>
@@ -225,6 +227,209 @@ Sale Value: Rs.{{SALE_VALUE}}/- ({{SALE_VALUE_WORDS}})`,
   ]
 };
 
+// ── DOCX XML helpers (Smart Template engine) ─────────────────────────────────
+// We operate directly on word/document.xml inside the .docx zip so that
+// fonts, tables, headers/footers, margins etc. are preserved exactly.
+// Strategy:
+//  1. Unzip with JSZip
+//  2. Pull plain text out of <w:t> nodes (in document order) for AI analysis
+//  3. For "fill": do raw string replace of {{KEY}} occurrences inside <w:t> text
+//     (placeholders that got split across multiple runs by Word are first
+//     "healed" by merging adjacent runs that together spell {{...}}).
+//  4. For "convert hardcoded → placeholder": same merge step, then replace the
+//     literal sample text with {{KEY}}.
+//  5. Re-zip and produce a real .docx blob.
+
+const DOCX_NS_T = /<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g;
+
+// Extract concatenated visible text from document.xml (rough order-preserving)
+function extractTextFromXml(xml){
+  let out=""; let m;
+  const re=/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g;
+  while((m=re.exec(xml))){
+    out += decodeXmlEntities(m[1]);
+  }
+  // Add paragraph breaks
+  return out;
+}
+
+function extractParagraphsFromXml(xml){
+  const paras = xml.split(/<w:p\b/).slice(1);
+  const lines=[];
+  for(const p of paras){
+    const body = p.split(/<\/w:p>/)[0];
+    let line=""; let m;
+    const re=/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g;
+    while((m=re.exec(body))){ line += decodeXmlEntities(m[1]); }
+    lines.push(line);
+  }
+  return lines.filter(l=>l.trim().length>0);
+}
+
+function decodeXmlEntities(s){
+  return s.replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">")
+          .replace(/&quot;/g,'"').replace(/&apos;/g,"'");
+}
+function encodeXmlEntities(s){
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+          .replace(/"/g,"&quot;").replace(/'/g,"&apos;");
+}
+
+// Merge runs so that any {{PLACEHOLDER}} split across multiple <w:r> nodes
+// becomes a single <w:t> node. This is the same "healing" technique used by
+// docxtemplater. We do this paragraph-by-paragraph, preserving the
+// formatting (rPr) of the FIRST run in each merged group.
+function healPlaceholders(xml){
+  return xml.replace(/(<w:p\b[\s\S]*?<\/w:p>)/g, paragraph => {
+    // Get full text of paragraph (concatenation of all w:t)
+    let fullText="";
+    const tRe=/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g;
+    let m, segments=[];
+    while((m=tRe.exec(paragraph))){
+      segments.push(decodeXmlEntities(m[1]));
+      fullText+=decodeXmlEntities(m[1]);
+    }
+    if(!/\{\{[A-Za-z0-9_]+\}\}/.test(fullText)) return paragraph;
+
+    // Find runs that need merging: any run whose text participates in a {{...}} span
+    // Simplify: replace the whole sequence of <w:r>...</w:r> runs that overlap a
+    // placeholder with a single run carrying the merged text + first run's rPr.
+    // We do this by scanning run-by-run and building groups.
+    const runRe=/<w:r\b[^>]*>[\s\S]*?<\/w:r>/g;
+    const runs=paragraph.match(runRe)||[];
+    if(runs.length===0) return paragraph;
+
+    // Build array of {raw, text, rPr}
+    const parsed = runs.map(r=>{
+      const rprM=r.match(/<w:rPr>[\s\S]*?<\/w:rPr>/);
+      const rPr = rprM?rprM[0]:"";
+      let text="";
+      const tt=/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g; let mm;
+      while((mm=tt.exec(r))){ text+=decodeXmlEntities(mm[1]); }
+      const hasText = /<w:t/.test(r);
+      return {raw:r, text, rPr, hasText};
+    });
+
+    // Walk through, accumulate groups whenever we're "inside" an unmatched {{
+    let result="";
+    let buffer=null; // {rPr, text, raws:[]}
+    let acc=""; // accumulated text across current run sequence to detect placeholders
+
+    const flushBuffer=()=>{
+      if(!buffer) return;
+      if(buffer.raws.length===1){
+        result+=buffer.raws[0];
+      } else {
+        const newRun = `<w:r>${buffer.rPr}<w:t xml:space="preserve">${encodeXmlEntities(buffer.text)}</w:t></w:r>`;
+        result+=newRun;
+      }
+      buffer=null;
+    };
+
+    for(let i=0;i<parsed.length;i++){
+      const cur=parsed[i];
+      if(!cur.hasText){
+        flushBuffer();
+        result+=cur.raw;
+        continue;
+      }
+      if(!buffer){
+        buffer={rPr:cur.rPr, text:cur.text, raws:[cur.raw]};
+      } else {
+        buffer.text += cur.text;
+        buffer.raws.push(cur.raw);
+      }
+      // Check: does buffer.text contain a balanced {{...}} OR no opening brace pending?
+      const openIdx = buffer.text.lastIndexOf("{{");
+      const closeIdx = buffer.text.lastIndexOf("}}");
+      const pendingOpen = openIdx > closeIdx; // we have an unmatched {{
+      if(!pendingOpen){
+        flushBuffer();
+      }
+    }
+    flushBuffer();
+
+    // Replace original run sequence with result. Need to splice back into paragraph
+    // by replacing the substring containing all original runs with `result`.
+    const firstIdx = paragraph.indexOf(runs[0]);
+    const lastRun = runs[runs.length-1];
+    const lastIdx = paragraph.lastIndexOf(lastRun) + lastRun.length;
+    return paragraph.slice(0,firstIdx) + result + paragraph.slice(lastIdx);
+  });
+}
+
+// Replace {{KEY}} with value inside <w:t> nodes (after healing)
+function fillPlaceholdersInXml(xml, values){
+  const healed = healPlaceholders(xml);
+  return healed.replace(/<w:t((?:\s[^>]*)?)>([\s\S]*?)<\/w:t>/g, (full, attrs, inner) => {
+    let text = inner;
+    let changed=false;
+    text = text.replace(/\{\{([A-Za-z0-9_]+)\}\}/g, (mm,key)=>{
+      changed=true;
+      const v = values[key];
+      return v!==undefined ? encodeXmlEntities(String(v)) : mm;
+    });
+    if(!changed) return full;
+    const preserve = attrs.includes("xml:space") ? attrs : attrs+' xml:space="preserve"';
+    return `<w:t${preserve}>${text}</w:t>`;
+  });
+}
+
+// Convert hardcoded literal text occurrences into {{KEY}} placeholders.
+// `replacements` = [{find:"original text", key:"FIELD_KEY"}]
+function applyPlaceholderConversions(xml, replacements){
+  let healed = healPlaceholders(xml);
+  for(const {find,key} of (replacements||[])){
+    if(!find || !find.trim()) continue;
+    const escFind = find.trim();
+    healed = healed.replace(/<w:t((?:\s[^>]*)?)>([\s\S]*?)<\/w:t>/g, (full, attrs, inner) => {
+      const decoded = decodeXmlEntities(inner);
+      if(!decoded.includes(escFind)) return full;
+      const replaced = decoded.split(escFind).join(`{{${key}}}`);
+      const preserve = attrs.includes("xml:space") ? attrs : attrs+' xml:space="preserve"';
+      return `<w:t${preserve}>${encodeXmlEntities(replaced)}</w:t>`;
+    });
+  }
+  return healed;
+}
+
+// Find all {{KEY}} placeholders already present in document.xml
+function findExistingPlaceholders(xml){
+  const text = extractTextFromXml(xml);
+  const set = new Set();
+  let m; const re=/\{\{([A-Za-z0-9_]+)\}\}/g;
+  while((m=re.exec(text))) set.add(m[1]);
+  return [...set];
+}
+
+// Load a .docx File into {zip, documentXml, headerXmls, footerXmls}
+async function loadDocx(file){
+  const buf = await file.arrayBuffer();
+  const zip = await JSZip.loadAsync(buf);
+  const documentXml = await zip.file("word/document.xml").async("string");
+  const headerFooterPaths = Object.keys(zip.files).filter(p=>/word\/(header|footer)\d*\.xml$/.test(p));
+  return {zip, documentXml, headerFooterPaths};
+}
+
+// Write back document.xml (and optionally header/footer xmls) and produce a Blob
+async function buildDocxBlob(zip, documentXml, headerFooterXmls){
+  zip.file("word/document.xml", documentXml);
+  if(headerFooterXmls){
+    for(const [path, content] of Object.entries(headerFooterXmls)){
+      zip.file(path, content);
+    }
+  }
+  return await zip.generateAsync({type:"blob", mimeType:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"});
+}
+
+function downloadBlob(blob, filename){
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download=filename;
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+
 // ── Convert Module ───────────────────────────────────────────────────────────
 function Convert({apiKey,onDone}) {
   const [phase,setPhase]=useState("idle");
@@ -236,9 +441,32 @@ function Convert({apiKey,onDone}) {
 
   const addLog=msg=>setLog(p=>[...p,msg]);
 
-  const callAI=async(text)=>{
+  const callAI=async(text, mode, existingPlaceholders)=>{
     setPhase("ai");addLog("🤖 Groq AI analyzing fields...");
-    const prompt=`You are a document automation expert. Analyze this document and identify ALL variable fields (names, dates, IDs, amounts, addresses).
+
+    let prompt;
+    if(mode==="docx"){
+      prompt=`You are a document automation expert working with the extracted text of a Word (.docx) legal/government document (India). The document may already contain placeholders in {{UPPER_SNAKE_CASE}} form, OR it may be a fully filled-in document with real names/dates/numbers ("hardcoded values") that should become placeholders.
+
+Existing placeholders already found in the file: ${JSON.stringify(existingPlaceholders||[])}
+
+TASK: Identify every variable value (names, dates, ages, Aadhaar/PAN/ID numbers, amounts, addresses, survey numbers, districts, mandals, etc.) that is currently hardcoded as literal text (NOT already a {{...}} placeholder), and propose converting each to a new {{UPPER_SNAKE_CASE}} placeholder.
+
+Return ONLY a raw JSON object, no markdown, no code fences, no explanation, exactly this structure:
+{"docTitle":"Document Type","language":"English or Telugu etc","fields":[{"key":"FIELD_KEY","label":"Human readable label","type":"text|date|number|id|address|currency","required":true,"sample":"the EXACT literal text found in the document for this value","find":"the EXACT literal text to search-and-replace in the document (must match verbatim, including spacing/punctuation as it appears)"}]}
+
+Rules:
+- "find" must be the EXACT substring as it appears in the document text (case, spacing, punctuation must match verbatim) so it can be string-replaced.
+- Do NOT include fields for placeholders that already exist (listed above) — only NEW hardcoded values.
+- Use UPPERCASE_SNAKE_CASE for "key".
+- Each name/date/ID/amount/address = a separate field.
+- Keep "find" short and unique enough to avoid accidental double-matches (e.g. include enough surrounding context only if the bare value is too generic, but prefer the bare value).
+- If the document already appears fully templated (no hardcoded values left), return {"docTitle":"...","language":"...","fields":[]}.
+
+DOCUMENT TEXT (extracted, may have line breaks normalized):
+${text.slice(0,8000)}`;
+    } else {
+      prompt=`You are a document automation expert. Analyze this document and identify ALL variable fields (names, dates, IDs, amounts, addresses).
 
 Convert it into a template by replacing variable values with {{PLACEHOLDER_KEY}} tags.
 
@@ -254,6 +482,7 @@ Rules:
 
 DOCUMENT:
 ${text.slice(0,6000)}`;
+    }
 
     const r=await fetch("https://api.groq.com/openai/v1/chat/completions",{
       method:"POST",
@@ -265,7 +494,6 @@ ${text.slice(0,6000)}`;
     const raw=d.choices?.[0]?.message?.content||"";
     addLog("📦 "+raw.slice(0,120));
     let jsonStr = raw.replace(/```json|```/g,"").trim();
-    // Find the JSON object in the response
     const startIdx = jsonStr.indexOf('{');
     const endIdx = jsonStr.lastIndexOf('}');
     if(startIdx !== -1 && endIdx !== -1) jsonStr = jsonStr.slice(startIdx, endIdx+1);
@@ -280,33 +508,95 @@ ${text.slice(0,6000)}`;
           label:f.label||f.fieldLabel||f.field_label||f.description||f.field_name||k,
           type:f.type||f.fieldType||"text",
           required:f.required!==undefined?f.required:true,
-          sample:f.sample||f.example||f.value||f.original_value||""
+          sample:f.sample||f.example||f.value||f.original_value||"",
+          find:f.find||f.sample||f.example||""
         };
       });
     }
     return parsed;
   };
 
+  // ── Process plain text (legacy text-based flow) ───────────────────────────
   const process=async(text,fname="pasted text")=>{
     setPhase("reading");setLog([]);setErr("");
     addLog(`📄 Reading ${fname}...`);
     try{
       addLog(`✅ ${text.length} characters`);
-      const parsed=await callAI(text);
+      const parsed=await callAI(text,"text");
       addLog(`✅ Found ${parsed.fields?.length||0} fields`);
       addLog("🎉 Done!");
-      setResult(parsed);setPhase("done");
+      setResult({mode:"text", ...parsed});setPhase("done");
     }catch(e){setErr(e.message);setPhase("error");}
+  };
+
+  // ── Process a .docx file → Smart Template mode ─────────────────────────────
+  const processDocx = async(file)=>{
+    setPhase("reading");setLog([]);setErr("");
+    addLog(`📄 Reading ${file.name}...`);
+    try{
+      const {zip, documentXml, headerFooterPaths} = await loadDocx(file);
+      const existing = findExistingPlaceholders(documentXml);
+      addLog(`🔎 Found ${existing.length} existing {{placeholders}}`);
+
+      const lines = extractParagraphsFromXml(documentXml);
+      const plainText = lines.join("\n");
+      addLog(`✅ Extracted ${plainText.length} characters of text`);
+
+      let aiResult={docTitle:"Document",language:"Auto",fields:[]};
+      if(plainText.trim().length>0){
+        try{
+          aiResult = await callAI(plainText,"docx",existing);
+        }catch(e){
+          addLog("⚠️ AI analysis failed: "+e.message+" (continuing with existing placeholders only)");
+        }
+      }
+
+      // Build full field list: existing placeholders (need labels/types from AI if matched) + new suggested
+      const aiFieldsByKey={};
+      (aiResult.fields||[]).forEach(f=>{aiFieldsByKey[f.key]=f;});
+
+      const existingFields = existing.map(key=>({
+        key, label: key.replace(/_/g," "), type:"text", required:true, sample:"", find:"", existing:true
+      }));
+      const newFields = (aiResult.fields||[]).filter(f=>!existing.includes(f.key)).map(f=>({...f, existing:false}));
+
+      addLog(`✅ ${existingFields.length} existing + ${newFields.length} new suggested fields`);
+      addLog("🎉 Done!");
+
+      setResult({
+        mode:"docx",
+        docTitle: aiResult.docTitle || file.name.replace(/\.docx$/i,""),
+        language: aiResult.language || "Auto",
+        fileName: file.name,
+        zip, documentXml, headerFooterPaths,
+        existingFields, newFields,
+        // selection state for which "new" fields user wants converted
+        selectedNew: newFields.map(()=>true),
+      });
+      setPhase("done");
+    }catch(e){
+      setErr(e.message);setPhase("error");
+    }
   };
 
   const onFile=e=>{
     const f=e.target.files?.[0];if(!f)return;
     const name=f.name.toLowerCase();
-    if(name.endsWith(".txt")||name.endsWith(".md")||name.endsWith(".html")){
+    if(name.endsWith(".docx")){
+      processDocx(f);
+    } else if(name.endsWith(".txt")||name.endsWith(".md")||name.endsWith(".html")){
       const rd=new FileReader();
       rd.onload=ev=>process(ev.target.result,f.name);
       rd.readAsText(f);
     }else{setPhase("paste");}
+  };
+
+  const onDrop=e=>{
+    e.preventDefault();e.currentTarget.style.borderColor="#CBD5E1";
+    const f=e.dataTransfer.files[0];if(!f)return;
+    const name=f.name.toLowerCase();
+    if(name.endsWith(".docx")){processDocx(f);return;}
+    const rd=new FileReader();rd.onload=ev=>process(ev.target.result,f.name);rd.readAsText(f);
   };
 
   const TC={text:C.indigo,date:C.teal,number:C.gold,id:C.rose,address:C.slate,currency:C.green};
@@ -314,18 +604,18 @@ ${text.slice(0,6000)}`;
   if(phase==="idle") return(
     <div className="fadein">
       <Heading title="Convert Document → Fillable Template"
-        sub="Upload or paste any document. AI detects all variable fields automatically."/>
+        sub="Upload a Word (.docx) file for Smart Template mode (preserves formatting), or paste text for a quick text template."/>
       <Card>
         <div onClick={()=>fileRef.current.click()}
           style={{border:"2px dashed #CBD5E1",borderRadius:12,padding:"36px 16px",textAlign:"center",
             background:C.bg,cursor:"pointer"}}
           onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor=C.indigo;}}
           onDragLeave={e=>{e.currentTarget.style.borderColor="#CBD5E1";}}
-          onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor="#CBD5E1";const f=e.dataTransfer.files[0];if(f){const rd=new FileReader();rd.onload=ev=>process(ev.target.result,f.name);rd.readAsText(f);}}}>
+          onDrop={onDrop}>
           <div style={{fontSize:44}}>📄</div>
           <p style={{fontWeight:700,margin:"10px 0 4px",color:C.text}}>Drop file or tap to browse</p>
-          <p style={{color:C.muted,fontSize:12}}>TXT · MD · HTML supported</p>
-          <input ref={fileRef} type="file" accept=".txt,.md,.html" style={{display:"none"}} onChange={onFile}/>
+          <p style={{color:C.muted,fontSize:12}}>DOCX (Smart Template) · TXT · MD · HTML</p>
+          <input ref={fileRef} type="file" accept=".txt,.md,.html,.docx" style={{display:"none"}} onChange={onFile}/>
         </div>
 
         <div style={{margin:"20px 0 8px",fontWeight:700,fontSize:13,color:C.text}}>✏️ Or paste document text:</div>
@@ -335,7 +625,7 @@ ${text.slice(0,6000)}`;
             fontSize:13,lineHeight:1.7,resize:"vertical",outline:"none",color:C.text}}/>
         <div style={{marginTop:8}}>
           <Btn color={C.indigo} disabled={!pasteText.trim()} onClick={()=>process(pasteText)}>
-            🔄 Convert to Template
+            🔄 Convert to Text Template
           </Btn>
         </div>
 
@@ -373,7 +663,7 @@ ${text.slice(0,6000)}`;
 
   if(phase==="paste") return(
     <div className="fadein">
-      <Heading title="Paste Document Content" sub="PDF/DOCX can't be read directly — please paste the text below."/>
+      <Heading title="Paste Document Content" sub="This file type can't be read directly — please paste the text below."/>
       <Card>
         <textarea value={pasteText} onChange={e=>setPasteText(e.target.value)}
           placeholder="Paste document text here..."
@@ -392,11 +682,10 @@ ${text.slice(0,6000)}`;
       <p style={{fontWeight:800,color:C.rose,margin:"12px 0 4px"}}>Conversion Failed</p>
       <p style={{color:C.muted,fontSize:13,marginBottom:20}}>{err}</p>
       <Btn color={C.indigo} onClick={()=>{setPhase("idle");setErr("");}}>Try Again</Btn>
-      <Btn outline color={C.rose} onClick={()=>{localStorage.removeItem("DOCAUTO_KEY");window.location.reload();}}>🔑 Reset API Key</Btn>
     </Card>
   );
 
-  if(phase==="done"&&result) return(
+  if(phase==="done"&&result&&result.mode==="text") return(
     <div className="fadein">
       <Heading title="✅ Conversion Complete!"
         sub={`${result.docTitle||"Document"} · ${result.language||""} · ${result.fields?.length||0} fields found`}/>
@@ -439,29 +728,150 @@ ${text.slice(0,6000)}`;
     </div>
   );
 
+  if(phase==="done"&&result&&result.mode==="docx") return(
+    <DocxConvertReview result={result} setResult={setResult} onDone={onDone}
+      onReset={()=>{setPhase("idle");setResult(null);setLog([]);}}/>
+  );
+
   return null;
 }
 
+// ── Review screen for Smart Template (DOCX) conversion ───────────────────────
+function DocxConvertReview({result, setResult, onDone, onReset}){
+  const TC={text:C.indigo,date:C.teal,number:C.gold,id:C.rose,address:C.slate,currency:C.green};
+  const toggle=i=>{
+    setResult(r=>{
+      const sel=[...r.selectedNew];sel[i]=!sel[i];
+      return {...r, selectedNew:sel};
+    });
+  };
+
+  const editField=(i,key,val)=>{
+    setResult(r=>{
+      const nf=[...r.newFields];nf[i]={...nf[i],[key]:val};
+      return {...r, newFields:nf};
+    });
+  };
+
+  const proceed=()=>{
+    const chosen = result.newFields.filter((f,i)=>result.selectedNew[i]);
+    let xml = result.documentXml;
+    if(chosen.length){
+      xml = applyPlaceholderConversions(xml, chosen.map(f=>({find:f.find, key:f.key})));
+    } else {
+      xml = healPlaceholders(xml);
+    }
+    const allFields = [
+      ...result.existingFields,
+      ...chosen.map(f=>({key:f.key,label:f.label,type:f.type,required:f.required,sample:f.sample}))
+    ];
+    onDone({
+      mode:"docx",
+      docTitle: result.docTitle,
+      language: result.language,
+      fileName: result.fileName,
+      zip: result.zip,
+      documentXml: xml,
+      headerFooterPaths: result.headerFooterPaths,
+      fields: allFields,
+    });
+  };
+
+  const total = result.existingFields.length + result.newFields.filter((f,i)=>result.selectedNew[i]).length;
+
+  return(
+    <div className="fadein">
+      <Heading title="✅ Smart Template Analysis Complete!"
+        sub={`${result.docTitle} · ${result.language} · ${result.fileName}`}/>
+
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:10,marginBottom:16}}>
+        {[["Existing tags",result.existingFields.length,C.teal,"🏷️"],
+          ["New suggested",result.newFields.length,C.indigo,"✨"],
+          ["Will be filled",total,C.green,"✅"],
+          ["Format","Preserved",C.gold,"🖋️"]
+        ].map(([l,v,c,i])=>(
+          <Card key={l} style={{textAlign:"center",padding:14}}>
+            <div style={{fontSize:22}}>{i}</div>
+            <div style={{fontSize:20,fontWeight:900,color:c,margin:"2px 0"}}>{v}</div>
+            <div style={{fontSize:11,color:C.muted}}>{l}</div>
+          </Card>
+        ))}
+      </div>
+
+      {result.existingFields.length>0&&(
+        <Card style={{marginBottom:14}}>
+          <h4 style={{margin:"0 0 12px",fontSize:14,fontWeight:700,color:C.text}}>🏷️ Existing Placeholders Found</h4>
+          <div style={{display:"flex",flexWrap:"wrap",gap:7}}>
+            {result.existingFields.map(f=>(
+              <code key={f.key} style={{fontSize:11,color:C.teal,background:C.teal+"12",padding:"4px 9px",borderRadius:6}}>{`{{${f.key}}}`}</code>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {result.newFields.length>0?(
+        <Card style={{marginBottom:14}}>
+          <h4 style={{margin:"0 0 4px",fontSize:14,fontWeight:700,color:C.text}}>✨ New Hardcoded Values → Suggested Placeholders</h4>
+          <p style={{margin:"0 0 12px",fontSize:12,color:C.muted}}>Uncheck any you don't want converted. Edit the placeholder key if needed.</p>
+          <div style={{display:"flex",flexDirection:"column",gap:7,maxHeight:380,overflowY:"auto"}}>
+            {result.newFields.map((f,i)=>(
+              <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",
+                background:result.selectedNew[i]?C.bg:"#F8F8F8",border:`1px solid ${result.selectedNew[i]?"#E2E8F0":"#EEE"}`,borderRadius:9,opacity:result.selectedNew[i]?1:0.55}}>
+                <input type="checkbox" checked={result.selectedNew[i]} onChange={()=>toggle(i)} style={{width:16,height:16,flexShrink:0}}/>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+                    <code style={{fontSize:11,color:C.indigo,background:C.indigo+"12",padding:"2px 7px",borderRadius:5}}>{`{{${f.key}}}`}</code>
+                    <span style={{fontWeight:600,fontSize:13}}>{f.label}</span>
+                    <Badge color={TC[f.type]||C.slate}>{f.type||"text"}</Badge>
+                  </div>
+                  <div style={{fontSize:11,color:C.muted,marginTop:2,wordBreak:"break-all"}}>
+                    Replaces: "<strong>{f.find||f.sample}</strong>"
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      ):(
+        <Card style={{marginBottom:14, background:C.green+"08", border:`1px solid ${C.green}30`}}>
+          <p style={{margin:0,fontSize:13,color:C.green,fontWeight:700}}>✅ No new hardcoded values detected — document already fully templated.</p>
+        </Card>
+      )}
+
+      <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+        <Btn color={C.indigo} onClick={proceed} icon="✍️">Fill This Template ({total} fields)</Btn>
+        <Btn outline color={C.slate} onClick={onReset}>Convert Another</Btn>
+      </div>
+    </div>
+  );
+}
+
 // ── Fill & Generate Module ───────────────────────────────────────────────────
-function Fill({template}) {
+function Fill({template, addRecord}) {
   const tpl=template||DEFAULT_TPL;
+  const isDocx = tpl.mode==="docx";
+  const fieldList = tpl.fields || tpl.fields===undefined ? (tpl.fields||[]) : [];
+  const fields = isDocx ? (tpl.fields||[]) : (tpl.fields||[]);
+
   const [vals,setVals]=useState(()=>{
-    const o={};(tpl.fields||[]).forEach(f=>{o[f.key]=f.sample||"";});return o;
+    const o={};(fields||[]).forEach(f=>{o[f.key]=f.sample||"";});return o;
   });
   const [errs,setErrs]=useState({});
   const [done,setDone]=useState(false);
   const [doc,setDoc]=useState("");
+  const [docxBlob,setDocxBlob]=useState(null);
+  const [generating,setGenerating]=useState(false);
 
   useEffect(()=>{
-    const o={};(tpl.fields||[]).forEach(f=>{o[f.key]=f.sample||"";});
-    setVals(o);setDone(false);setErrs({});
-  },[tpl]);
+    const o={};(fields||[]).forEach(f=>{o[f.key]=f.sample||"";});
+    setVals(o);setDone(false);setErrs({});setDocxBlob(null);
+  },[template]);
 
   const TC={text:C.indigo,date:C.teal,number:C.gold,id:C.rose,address:C.slate,currency:C.green};
   const TI={text:"📝",date:"📅",number:"🔢",id:"🪪",address:"🏠",currency:"💰"};
 
   const groups={};
-  (tpl.fields||[]).forEach(f=>{
+  (fields||[]).forEach(f=>{
     const g=f.type==="id"?"🪪 Identity":f.type==="date"?"📅 Dates":
       (f.type==="currency"||f.type==="number")?"💰 Amounts":
       f.type==="address"?"🏠 Address":"📝 Text Fields";
@@ -469,43 +879,53 @@ function Fill({template}) {
   });
   const GC={"🪪 Identity":C.rose,"📅 Dates":C.teal,"💰 Amounts":C.gold,"🏠 Address":C.slate,"📝 Text Fields":C.indigo};
 
-  const generate=()=>{
+  const validate=()=>{
     const e={};
-    (tpl.fields||[]).filter(f=>f.required).forEach(f=>{if(!vals[f.key]?.trim())e[f.key]="Required";});
-    if(Object.keys(e).length){setErrs(e);return;}
-    let d=tpl.templateText||"";
-    Object.entries(vals).forEach(([k,v])=>{d=d.replaceAll(`{{${k}}}`,v||`[${k}]`);});
-    setDoc(d);setDone(true);
+    (fields||[]).filter(f=>f.required).forEach(f=>{if(!vals[f.key]?.trim())e[f.key]="Required";});
+    setErrs(e);
+    return Object.keys(e).length===0;
+  };
+
+  const generate=async()=>{
+    if(!validate())return;
+    setGenerating(true);
+    try{
+      if(isDocx){
+        const filledXml = fillPlaceholdersInXml(tpl.documentXml, vals);
+        const blob = await buildDocxBlob(tpl.zip, filledXml);
+        setDocxBlob(blob);
+        // Build a plain-text preview from the filled XML
+        setDoc(extractParagraphsFromXml(filledXml).join("\n"));
+      } else {
+        let d=tpl.templateText||"";
+        Object.entries(vals).forEach(([k,v])=>{d=d.replaceAll(`{{${k}}}`,v||`[${k}]`);});
+        setDoc(d);
+      }
+      setDone(true);
+      if(addRecord) addRecord({
+        title: tpl.docTitle||"Document",
+        time: new Date().toISOString(),
+        fields: vals,
+      });
+    }catch(e){
+      alert("Generation failed: "+e.message);
+    }
+    setGenerating(false);
   };
 
   const dlTXT=()=>{
     const b=new Blob([doc],{type:"text/plain;charset=utf-8"});
-    const a=document.createElement("a");a.href=URL.createObjectURL(b);
-    a.download=(tpl.docTitle||"document").replace(/\s+/g,"_")+"_filled.txt";
-    document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(a.href);
+    downloadBlob(b,(tpl.docTitle||"document").replace(/\s+/g,"_")+"_filled.txt");
   };
 
-  const dlDOC=()=>{
-    const title=tpl.docTitle||"Document";
-    const lines=doc.split("\n");
-    const rtfLines=lines.map(l=>{
-      if(!l.trim())return "\\par";
-      // Escape RTF special chars
-      const escaped=l.replace(/\\/g,"\\\\").replace(/\{/g,"\\{").replace(/\}/g,"\\}");
-      return "\\par "+escaped;
-    }).join("\n");
-    const rtf=`{\\rtf1\\ansi\\deff0
-{\\fonttbl{\\f0\\froman\\fcharset0 Times New Roman;}{\\f1\\fswiss Arial;}}
-{\\colortbl ;\\red0\\green0\\blue0;}
-\\paperw12240\\paperh15840\\margl1800\\margr1800\\margt1440\\margb1440
-\\f0\\fs24\\cf1
-{\\b\\fs28\\qc ${title}\\par\\par}
-${rtfLines}
-}`;
-    const b=new Blob([rtf],{type:"application/rtf;charset=utf-8"});
-    const a=document.createElement("a");a.href=URL.createObjectURL(b);
-    a.download=(tpl.docTitle||"document").replace(/\s+/g,"_")+"_filled.rtf";
-    document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(a.href);
+  const dlDOCX=()=>{
+    if(isDocx && docxBlob){
+      downloadBlob(docxBlob,(tpl.docTitle||"document").replace(/\s+/g,"_")+"_filled.docx");
+      return;
+    }
+    // Fallback: build a basic real .docx from plain text using minimal OOXML
+    const blob = buildSimpleDocx(tpl.docTitle||"Document", doc);
+    downloadBlob(blob,(tpl.docTitle||"document").replace(/\s+/g,"_")+"_filled.docx");
   };
 
   const dlPDF=()=>{
@@ -513,11 +933,11 @@ ${rtfLines}
     const w=window.open("","_blank");
     if(!w){alert("Allow popups and try again");return;}
     w.document.write(`<!DOCTYPE html><html><head><title>${title}</title>
-<style>body{font-family:"Times New Roman",serif;font-size:12pt;line-height:1.9;margin:2cm}
+<style>body{font-family:"Noto Sans Telugu","Times New Roman",serif;font-size:12pt;line-height:1.9;margin:2cm}
 h1{font-size:16pt;text-align:center;font-weight:bold;margin-bottom:18pt}p{margin:5pt 0}
 @media print{body{margin:1.5cm}}</style></head><body>
 <h1>${title}</h1>
-${doc.split("\n").map(l=>`<p>${l||"&nbsp;"}</p>`).join("\n")}
+${doc.split("\n").map(l=>`<p>${l?l.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"):"&nbsp;"}</p>`).join("\n")}
 <script>window.onload=()=>window.print()<\/script>
 </body></html>`);
     w.document.close();
@@ -526,7 +946,7 @@ ${doc.split("\n").map(l=>`<p>${l||"&nbsp;"}</p>`).join("\n")}
   return(
     <div className="fadein">
       <Heading title={`✍️ Fill: ${tpl.docTitle||"Document"}`}
-        sub={`${tpl.fields?.length} fields · ${tpl.language||""}`}/>
+        sub={`${fields?.length||0} fields · ${tpl.language||""}${isDocx?" · Smart Template (.docx)":""}`}/>
 
       {Object.entries(groups).map(([gname,gfields])=>(
         <Card key={gname} style={{marginBottom:14,borderLeft:`4px solid ${GC[gname]||C.indigo}`}}>
@@ -553,9 +973,11 @@ ${doc.split("\n").map(l=>`<p>${l||"&nbsp;"}</p>`).join("\n")}
       ))}
 
       <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:16}}>
-        <Btn color={C.indigo} onClick={generate} icon="📄">Generate DOCX</Btn>
-        <Btn color={C.rose} onClick={()=>{generate();}} icon="📋">Generate PDF</Btn>
-        <Btn outline color={C.slate} onClick={()=>{const o={};(tpl.fields||[]).forEach(f=>{o[f.key]="";});setVals(o);setDone(false);}}>Clear</Btn>
+        <Btn color={C.indigo} onClick={generate} disabled={generating} icon="📄">
+          {generating?"Generating…":isDocx?"Generate DOCX (formatted)":"Generate Document"}
+        </Btn>
+        <Btn color={C.rose} onClick={async()=>{if(!done)await generate();dlPDF();}} icon="🖨">Generate PDF</Btn>
+        <Btn outline color={C.slate} onClick={()=>{const o={};(fields||[]).forEach(f=>{o[f.key]="";});setVals(o);setDone(false);setDocxBlob(null);}}>Clear</Btn>
       </div>
 
       {done&&(
@@ -565,10 +987,13 @@ ${doc.split("\n").map(l=>`<p>${l||"&nbsp;"}</p>`).join("\n")}
               <span style={{fontSize:32}}>✅</span>
               <div style={{flex:1}}>
                 <p style={{fontWeight:800,color:C.green,margin:"0 0 2px",fontSize:15}}>Document Ready!</p>
-                <p style={{color:C.muted,fontSize:13,margin:0}}>{(tpl.docTitle||"document").replace(/\s+/g,"_")}_filled</p>
+                <p style={{color:C.muted,fontSize:13,margin:0}}>
+                  {(tpl.docTitle||"document").replace(/\s+/g,"_")}_filled
+                  {isDocx&&<span> · original formatting preserved</span>}
+                </p>
               </div>
               <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                <Btn small color={C.indigo} onClick={dlDOC}>⬇ DOCX</Btn>
+                <Btn small color={C.indigo} onClick={dlDOCX}>⬇ DOCX</Btn>
                 <Btn small color={C.rose} onClick={dlPDF}>🖨 PDF</Btn>
                 <Btn small outline color={C.slate} onClick={dlTXT}>TXT</Btn>
               </div>
@@ -576,7 +1001,7 @@ ${doc.split("\n").map(l=>`<p>${l||"&nbsp;"}</p>`).join("\n")}
           </Card>
           <Card style={{padding:0,overflow:"hidden"}}>
             <div style={{padding:"9px 16px",background:C.bg,borderBottom:"1px solid #E2E8F0",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-              <span style={{fontWeight:700,fontSize:13}}>📄 Preview</span>
+              <span style={{fontWeight:700,fontSize:13}}>📄 Preview {isDocx&&"(text only — DOCX download has full formatting)"}</span>
               <Btn small outline color={C.slate} onClick={()=>{navigator.clipboard?.writeText(doc);}}>📋 Copy</Btn>
             </div>
             <pre style={{padding:18,margin:0,fontFamily:"'Courier New',monospace",fontSize:12,
@@ -590,14 +1015,56 @@ ${doc.split("\n").map(l=>`<p>${l||"&nbsp;"}</p>`).join("\n")}
   );
 }
 
+// Build a minimal but valid .docx (OOXML) from plain text, used as fallback
+// for the text-based (non Smart Template) flow.
+function buildSimpleDocx(title, bodyText){
+  const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  const paragraphs = bodyText.split("\n").map(line=>{
+    const t = line.length? `<w:t xml:space="preserve">${esc(line)}</w:t>` : "";
+    return `<w:p><w:r>${t}</w:r></w:p>`;
+  }).join("");
+
+  const titlePara = `<w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="32"/></w:rPr><w:t xml:space="preserve">${esc(title)}</w:t></w:r></w:p><w:p/>`;
+
+  const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+${titlePara}
+${paragraphs}
+<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>
+</w:body>
+</w:document>`;
+
+  const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`;
+
+  const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`;
+
+  const zip = new JSZip();
+  zip.file("[Content_Types].xml", contentTypes);
+  zip.folder("_rels").file(".rels", rootRels);
+  zip.folder("word").file("document.xml", documentXml);
+  return zip.generateAsync({type:"blob", mimeType:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"});
+}
+
 // ── Template Editor ──────────────────────────────────────────────────────────
 function Editor({template,onUpdate}) {
   const tpl=template||DEFAULT_TPL;
-  const [txt,setTxt]=useState(tpl.templateText||"");
+  const isDocx = tpl.mode==="docx";
+  const [txt,setTxt]=useState(isDocx ? extractParagraphsFromXml(tpl.documentXml||"").join("\n") : (tpl.templateText||""));
   const [newKey,setNewKey]=useState("");
   const taRef=useRef();
 
-  useEffect(()=>{if(tpl.templateText)setTxt(tpl.templateText);},[tpl]);
+  useEffect(()=>{
+    setTxt(isDocx ? extractParagraphsFromXml(tpl.documentXml||"").join("\n") : (tpl.templateText||""));
+  },[template]);
 
   const tags=[...txt.matchAll(/\{\{([A-Z0-9_]+)\}\}/g)].map(m=>m[1]).filter((v,i,a)=>a.indexOf(v)===i);
 
@@ -606,58 +1073,74 @@ function Editor({template,onUpdate}) {
     const s=el.selectionStart,e=el.selectionEnd;
     const tag=`{{${k.toUpperCase().replace(/\s+/g,"_")}}}`;
     const n=txt.slice(0,s)+tag+txt.slice(e);
-    setTxt(n);if(onUpdate)onUpdate({...tpl,templateText:n});
+    setTxt(n);
+    if(!isDocx && onUpdate)onUpdate({...tpl,templateText:n});
   };
 
-  const save=()=>{if(onUpdate)onUpdate({...tpl,templateText:txt});alert("Template saved!");};
+  const save=()=>{
+    if(isDocx){
+      alert("For Smart Templates, edit field labels/keys in the Convert review screen, or insert new {{TAGS}} here and re-run Convert to detect them. Direct text editing here doesn't modify the underlying .docx formatting.");
+      return;
+    }
+    if(onUpdate)onUpdate({...tpl,templateText:txt});
+    alert("Template saved!");
+  };
 
   const dl=()=>{
     const b=new Blob([txt],{type:"text/plain"});
-    const a=document.createElement("a");a.href=URL.createObjectURL(b);
-    a.download="template.txt";document.body.appendChild(a);a.click();document.body.removeChild(a);
+    downloadBlob(b,"template.txt");
   };
 
   return(
     <div className="fadein">
-      <Heading title="📝 Template Editor" sub="Edit template text. Use {{FIELD_NAME}} for all variable fields."/>
+      <Heading title="📝 Template Editor" sub={isDocx
+        ? "Smart Template (.docx) — showing extracted text. Original formatting is preserved in the output file."
+        : "Edit template text. Use {{FIELD_NAME}} for all variable fields."}/>
       <div style={{display:"flex",gap:14,flexWrap:"wrap"}}>
         <div style={{flex:"1 1 300px"}}>
           <Card style={{padding:0,overflow:"hidden",marginBottom:12}}>
             <div style={{padding:"9px 14px",background:C.bg,borderBottom:"1px solid #E2E8F0",display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
               <span style={{fontWeight:700,fontSize:13,flex:1}}>{tpl.docTitle||"Template"}</span>
-              <Btn small color={C.indigo} onClick={save}>💾 Save</Btn>
-              <Btn small outline color={C.slate} onClick={dl}>⬇ Download</Btn>
+              {isDocx&&<Badge color={C.gold}>.docx — read only preview</Badge>}
+              {!isDocx&&<Btn small color={C.indigo} onClick={save}>💾 Save</Btn>}
+              <Btn small outline color={C.slate} onClick={dl}>⬇ Download text</Btn>
             </div>
-            <textarea ref={taRef} value={txt} onChange={e=>{setTxt(e.target.value);if(onUpdate)onUpdate({...tpl,templateText:e.target.value});}}
+            <textarea ref={taRef} value={txt} readOnly={isDocx} onChange={e=>{setTxt(e.target.value);if(!isDocx&&onUpdate)onUpdate({...tpl,templateText:e.target.value});}}
               style={{width:"100%",minHeight:400,padding:16,border:"none",fontFamily:"'Courier New',monospace",
-                fontSize:12,lineHeight:1.8,resize:"vertical",outline:"none",color:C.text,boxSizing:"border-box"}}/>
+                fontSize:12,lineHeight:1.8,resize:"vertical",outline:"none",color:C.text,boxSizing:"border-box",
+                background:isDocx?"#FAFBFF":"#fff"}}/>
           </Card>
-          <Card>
-            <p style={{fontWeight:700,fontSize:13,margin:"0 0 8px"}}>➕ Insert Placeholder</p>
-            <div style={{display:"flex",gap:8}}>
-              <input value={newKey} onChange={e=>setNewKey(e.target.value)} placeholder="e.g. WITNESS_NAME"
-                style={{flex:1,padding:"8px 11px",border:"2px solid #E2E8F0",borderRadius:8,fontSize:13,outline:"none"}}/>
-              <Btn small color={C.indigo} onClick={()=>{if(newKey){insert(newKey);setNewKey("");}}}>Insert</Btn>
-            </div>
-          </Card>
+          {!isDocx&&(
+            <Card>
+              <p style={{fontWeight:700,fontSize:13,margin:"0 0 8px"}}>➕ Insert Placeholder</p>
+              <div style={{display:"flex",gap:8}}>
+                <input value={newKey} onChange={e=>setNewKey(e.target.value)} placeholder="e.g. WITNESS_NAME"
+                  style={{flex:1,padding:"8px 11px",border:"2px solid #E2E8F0",borderRadius:8,fontSize:13,outline:"none"}}/>
+                <Btn small color={C.indigo} onClick={()=>{if(newKey){insert(newKey);setNewKey("");}}}>Insert</Btn>
+              </div>
+            </Card>
+          )}
         </div>
 
         <div style={{width:240,minWidth:200}}>
           <Card style={{marginBottom:12}}>
-            <p style={{fontWeight:700,fontSize:13,margin:"0 0 10px"}}>📋 Fields ({tags.length})</p>
+            <p style={{fontWeight:700,fontSize:13,margin:"0 0 10px"}}>📋 Fields ({(tpl.fields||tags||[]).length})</p>
             <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:280,overflowY:"auto"}}>
-              {tags.map(t=>(
+              {(isDocx ? (tpl.fields||[]).map(f=>f.key) : tags).map(t=>(
                 <div key={t} style={{display:"flex",alignItems:"center",gap:6}}>
                   <code style={{fontSize:11,color:C.indigo,background:C.indigo+"10",padding:"2px 7px",borderRadius:5,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{`{{${t}}}`}</code>
-                  <button onClick={()=>insert(t)} style={{background:"none",border:"none",color:C.slate,cursor:"pointer",fontSize:13}}>+</button>
+                  {!isDocx&&<button onClick={()=>insert(t)} style={{background:"none",border:"none",color:C.slate,cursor:"pointer",fontSize:13}}>+</button>}
                 </div>
               ))}
-              {!tags.length&&<p style={{color:C.muted,fontSize:12,margin:0}}>No {{FIELDS}} yet</p>}
+              {((isDocx?(tpl.fields||[]):tags).length===0)&&<p style={{color:C.muted,fontSize:12,margin:0}}>No fields yet</p>}
             </div>
           </Card>
           <Card>
             <p style={{fontWeight:700,fontSize:13,margin:"0 0 8px"}}>💡 Tips</p>
-            {["Use {{CAPS_SNAKE}}","Split: SELLER_NAME, AGE","Dates: {{DEED_DATE}}","Amounts: {{SALE_VALUE}}","IDs: {{AADHAAR_NO}}"].map((t,i)=>(
+            {(isDocx
+              ?["Upload .docx in Convert","AI finds hardcoded values","Review & approve new tags","Output keeps fonts/tables/margins"]
+              :["Use {{CAPS_SNAKE}}","Split: SELLER_NAME, AGE","Dates: {{DEED_DATE}}","Amounts: {{SALE_VALUE}}","IDs: {{AADHAAR_NO}}"]
+            ).map((t,i)=>(
               <div key={i} style={{fontSize:11,color:C.muted,padding:"3px 0",borderBottom:"1px solid #F0F4FF"}}>{t}</div>
             ))}
           </Card>
@@ -670,7 +1153,7 @@ function Editor({template,onUpdate}) {
 // ── AI Chat ──────────────────────────────────────────────────────────────────
 function Chat({template,apiKey}) {
   const tpl=template||DEFAULT_TPL;
-  const [msgs,setMsgs]=useState([{role:"ai",text:`Hello! I am DocAuto AI Assistant. I can help you modify your template "${tpl.docTitle||"document"}". Ask me anything in Telugu, English, Hindi or any language!`}]);
+  const [msgs,setMsgs]=useState([{role:"ai",text:`Hello! I am DocAuto AI Assistant. I can help you with your template "${tpl.docTitle||"document"}". Ask me anything in Telugu, English, Hindi or any language!`}]);
   const [input,setInput]=useState("");
   const [loading,setLoading]=useState(false);
   const endRef=useRef();
@@ -752,33 +1235,82 @@ Help users modify templates. Suggest {{PLACEHOLDER}} syntax. Support Telugu, Eng
 // ── Batch Module ─────────────────────────────────────────────────────────────
 function Batch({template}) {
   const tpl=template||DEFAULT_TPL;
-  const [rows]=useState([
-    {SELLER_NAME:"Ramesh Kumar",BUYER_NAME:"Suresh Rao",DEED_DATE:"01-Jan-2025",SALE_VALUE:"31,50,000"},
-    {SELLER_NAME:"Lakshmi Devi",BUYER_NAME:"Venkat Reddy",DEED_DATE:"15-Feb-2025",SALE_VALUE:"45,00,000"},
-    {SELLER_NAME:"Ravi Shankar",BUYER_NAME:"Priya Kumari",DEED_DATE:"20-Mar-2025",SALE_VALUE:"28,75,000"},
-  ]);
+  const isDocx = tpl.mode==="docx";
+  const fields = tpl.fields||[];
+  const cols = fields.slice(0,6).map(f=>f.key);
+
+  const [rows,setRows]=useState(()=> cols.length? [
+    Object.fromEntries(fields.slice(0,6).map(f=>[f.key,f.sample||""]))
+  ] : []);
   const [prog,setProg]=useState(null);
   const [done,setDone]=useState(false);
+  const [results,setResults]=useState([]);
+  const fileRef=useRef();
 
-  const run=()=>{
-    setProg(0);setDone(false);
-    const iv=setInterval(()=>{
-      setProg(p=>{if(p>=rows.length){clearInterval(iv);setDone(true);return p;}return p+1;});
-    },700);
+  useEffect(()=>{
+    const c=fields.slice(0,6).map(f=>f.key);
+    setRows(c.length? [Object.fromEntries(fields.slice(0,6).map(f=>[f.key,f.sample||""]))] : []);
+    setDone(false);setProg(null);setResults([]);
+  },[template]);
+
+  const onCSV=e=>{
+    const f=e.target.files?.[0];if(!f)return;
+    const rd=new FileReader();
+    rd.onload=ev=>{
+      const wb=XLSX.read(ev.target.result,{type:"binary"});
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      const json=XLSX.utils.sheet_to_json(ws,{defval:""});
+      setRows(json);setDone(false);setResults([]);
+    };
+    rd.readAsBinaryString(f);
   };
 
-  const cols=["SELLER_NAME","BUYER_NAME","DEED_DATE","SALE_VALUE"];
+  const run=async()=>{
+    setProg(0);setDone(false);
+    const out=[];
+    for(let i=0;i<rows.length;i++){
+      const vals={};
+      fields.forEach(f=>{vals[f.key]=rows[i][f.key]!==undefined?String(rows[i][f.key]):(f.sample||"");});
+      try{
+        if(isDocx){
+          const filledXml=fillPlaceholdersInXml(tpl.documentXml,vals);
+          const blob=await buildDocxBlob(tpl.zip, filledXml);
+          out.push({blob, name:`${(tpl.docTitle||"doc").replace(/\s+/g,"_")}_${i+1}.docx`});
+        } else {
+          let d=tpl.templateText||"";
+          Object.entries(vals).forEach(([k,v])=>{d=d.replaceAll(`{{${k}}}`,v||`[${k}]`);});
+          const blob=new Blob([d],{type:"text/plain;charset=utf-8"});
+          out.push({blob, name:`${(tpl.docTitle||"doc").replace(/\s+/g,"_")}_${i+1}.txt`});
+        }
+      }catch(e){
+        out.push({error:e.message});
+      }
+      setProg(i+1);
+      await new Promise(r=>setTimeout(r,150));
+    }
+    setResults(out);setDone(true);
+  };
+
+  const downloadZip=async()=>{
+    const zip=new JSZip();
+    for(const r of results){
+      if(r.blob) zip.file(r.name, r.blob);
+    }
+    const blob=await zip.generateAsync({type:"blob"});
+    downloadBlob(blob, (tpl.docTitle||"documents").replace(/\s+/g,"_")+"_batch.zip");
+  };
 
   return(
     <div className="fadein">
-      <Heading title="⚡ Batch Generate" sub="Generate multiple documents at once from a data file."/>
+      <Heading title="⚡ Batch Generate" sub="Upload an Excel/CSV file — one row per document. Each output keeps the template's fields."/>
       <Card style={{marginBottom:14}}>
         <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:14,flexWrap:"wrap"}}>
           <div style={{flex:1}}>
             <p style={{fontWeight:700,margin:"0 0 2px"}}>📊 Upload CSV / Excel</p>
-            <p style={{color:C.muted,fontSize:13,margin:0}}>One row = one document</p>
+            <p style={{color:C.muted,fontSize:13,margin:0}}>Columns should match field keys: {cols.join(", ")||"(no fields)"}</p>
           </div>
-          <Btn color={C.indigo}>⬆ Upload CSV</Btn>
+          <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" style={{display:"none"}} onChange={onCSV}/>
+          <Btn color={C.indigo} onClick={()=>fileRef.current.click()}>⬆ Upload File</Btn>
         </div>
         <div style={{overflowX:"auto"}}>
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
@@ -795,12 +1327,17 @@ function Batch({template}) {
                   <td style={{padding:"8px 10px",color:C.muted}}>{i+1}</td>
                   {cols.map(c=><td key={c} style={{padding:"8px 10px"}}>{r[c]||"—"}</td>)}
                   <td style={{padding:"8px 10px"}}>
-                    {done||(prog!==null&&i<prog)?<Badge color={C.green}>✅ Done</Badge>
+                    {done&&results[i]?.blob?<Badge color={C.green}>✅ Done</Badge>
+                      :done&&results[i]?.error?<Badge color={C.rose}>⚠ Error</Badge>
+                      :prog!==null&&i<prog?<Badge color={C.green}>✅ Done</Badge>
                       :prog!==null&&i===prog?<Badge color={C.amber}>⏳ Processing</Badge>
                       :<Badge color={C.slate}>Pending</Badge>}
                   </td>
                 </tr>
               ))}
+              {rows.length===0&&(
+                <tr><td colSpan={cols.length+2} style={{padding:"14px 10px",color:C.muted,textAlign:"center"}}>No data — upload a CSV/Excel file (or this template has no fields yet)</td></tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -817,13 +1354,13 @@ function Batch({template}) {
         </Card>
       )}
       <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
-        <Btn color={C.indigo} onClick={run} disabled={prog!==null&&!done}>⚡ Generate All ({rows.length})</Btn>
-        {done&&<Btn color={C.green}>⬇ Download ZIP</Btn>}
-        {done&&<Btn outline color={C.slate} onClick={()=>{setProg(null);setDone(false);}}>Reset</Btn>}
+        <Btn color={C.indigo} onClick={run} disabled={(prog!==null&&!done)||rows.length===0}>⚡ Generate All ({rows.length})</Btn>
+        {done&&<Btn color={C.green} onClick={downloadZip}>⬇ Download ZIP</Btn>}
+        {done&&<Btn outline color={C.slate} onClick={()=>{setProg(null);setDone(false);setResults([]);}}>Reset</Btn>}
       </div>
       {done&&(
         <Card style={{marginTop:14,background:C.green+"0A",border:`2px solid ${C.green}30`}}>
-          <p style={{fontWeight:800,color:C.green,margin:"0 0 2px"}}>✅ {rows.length} documents generated!</p>
+          <p style={{fontWeight:800,color:C.green,margin:"0 0 2px"}}>✅ {results.filter(r=>r.blob).length}/{rows.length} documents generated!</p>
           <p style={{color:C.muted,margin:0,fontSize:13}}>Click Download ZIP to save all files.</p>
         </Card>
       )}
@@ -832,43 +1369,45 @@ function Batch({template}) {
 }
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
-function Dashboard() {
+function Dashboard({records}) {
   const stats=[
-    ["Generated","1,247",C.indigo,"📄","+12% this month"],
-    ["Templates","23",C.teal,"📝","+3 new"],
-    ["Credits","653",C.gold,"⚡","Remaining"],
-    ["Languages","5",C.green,"🌐","Supported"],
-  ];
-  const recent=[
-    {name:"SaleDeed_Ramesh.doc",type:"Sale Deed",lang:"Telugu",time:"2 min ago"},
-    {name:"Affidavit_Suresh.doc",type:"Affidavit",lang:"Telugu",time:"1 hr ago"},
-    {name:"GPA_Lakshmi.doc",type:"GPA",lang:"English",time:"3 hr ago"},
+    ["Generated",records.length,C.indigo,"📄"],
+    ["This Session","✓",C.teal,"📝"],
+    ["Languages","Multi",C.gold,"🌐"],
+    ["Mode","Smart Template",C.green,"🖋️"],
   ];
   return(
     <div className="fadein">
-      <Heading title="📊 Dashboard" sub="Your document automation activity."/>
+      <Heading title="📊 Dashboard" sub="Your document automation activity (this session)."/>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:10,marginBottom:16}}>
-        {stats.map(([l,v,c,i,s])=>(
+        {stats.map(([l,v,c,i])=>(
           <Card key={l} style={{textAlign:"center",padding:14}}>
             <div style={{fontSize:26}}>{i}</div>
             <div style={{fontSize:24,fontWeight:900,color:c,margin:"4px 0"}}>{v}</div>
             <div style={{fontSize:11,color:C.muted}}>{l}</div>
-            <div style={{marginTop:6}}><Badge color={c}>{s}</Badge></div>
           </Card>
         ))}
       </div>
       <Card>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-          <h3 style={{margin:0,fontSize:15,fontWeight:800,color:C.text}}>Recent Documents</h3>
+          <h3 style={{margin:0,fontSize:15,fontWeight:800,color:C.text}}>Generated Documents</h3>
+          {records.length>0&&<Btn small outline color={C.slate} onClick={()=>{
+            const ws=XLSX.utils.json_to_sheet(records.map(r=>({Title:r.title,Time:r.time,...r.fields})));
+            const wb=XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb,ws,"Records");
+            const out=XLSX.write(wb,{bookType:"xlsx",type:"array"});
+            downloadBlob(new Blob([out],{type:"application/octet-stream"}),"docauto_records.xlsx");
+          }}>⬇ Export Excel</Btn>}
         </div>
-        {recent.map((r,i)=>(
-          <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"11px 0",borderBottom:i<recent.length-1?"1px solid #F0F4FF":"none"}}>
+        {records.length===0&&<p style={{color:C.muted,fontSize:13}}>No documents generated yet this session.</p>}
+        {[...records].reverse().map((r,i)=>(
+          <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"11px 0",borderBottom:i<records.length-1?"1px solid #F0F4FF":"none"}}>
             <span style={{fontSize:18}}>📄</span>
             <div style={{flex:1}}>
-              <div style={{fontWeight:600,fontSize:13}}>{r.name}</div>
-              <div style={{color:C.muted,fontSize:12}}>{r.type} · {r.lang}</div>
+              <div style={{fontWeight:600,fontSize:13}}>{r.title}</div>
+              <div style={{color:C.muted,fontSize:12}}>{Object.keys(r.fields).length} fields filled</div>
             </div>
-            <span style={{color:C.muted,fontSize:12}}>{r.time}</span>
+            <span style={{color:C.muted,fontSize:12}}>{new Date(r.time).toLocaleTimeString()}</span>
             <Badge color={C.green}>✓ Ready</Badge>
           </div>
         ))}
@@ -889,20 +1428,23 @@ const NAV=[
 
 // ── ROOT APP ─────────────────────────────────────────────────────────────────
 function App() {
-  const [apiKey,setApiKey]=useState(()=>localStorage.getItem("DOCAUTO_KEY")||"");
+  const [apiKey,setApiKey]=useState("");
   const [active,setActive]=useState("convert");
   const [sidebar,setSidebar]=useState(true);
   const [template,setTemplate]=useState(null);
+  const [records,setRecords]=useState([]);
 
   if(!apiKey) return <ApiSetup onDone={k=>setApiKey(k)}/>;
 
+  const addRecord=rec=>setRecords(p=>[...p,rec]);
+
   const modules={
     convert:()=><Convert apiKey={apiKey} onDone={r=>{setTemplate(r);setActive("fill");}}/>,
-    fill:   ()=><Fill template={template}/>,
+    fill:   ()=><Fill template={template} addRecord={addRecord}/>,
     editor: ()=><Editor template={template} onUpdate={setTemplate}/>,
     chat:   ()=><Chat template={template} apiKey={apiKey}/>,
     batch:  ()=><Batch template={template}/>,
-    dash:   ()=><Dashboard/>,
+    dash:   ()=><Dashboard records={records}/>,
   };
   const Module=modules[active]||modules.convert;
 
@@ -945,7 +1487,7 @@ function App() {
                 <div style={{color:"#6B84F5",fontSize:10}}>Professional Plan</div>
               </div>
             </div>
-            <button onClick={()=>{localStorage.removeItem("DOCAUTO_KEY");setApiKey("");}}
+            <button onClick={()=>{setApiKey("");setTemplate(null);setRecords([]);}}
               style={{marginTop:10,background:"none",border:"1px solid #F43F5E40",color:"#F43F5E",
                 borderRadius:7,padding:"4px 10px",fontSize:11,cursor:"pointer",width:"100%"}}>
               🔑 Change API Key
@@ -965,7 +1507,7 @@ function App() {
             {NAV.find(n=>n.id===active)?.icon} {NAV.find(n=>n.id===active)?.label}
           </span>
           {template&&<Badge color={C.teal}>{template.fields?.length||0} fields</Badge>}
-          <Badge color={C.gold}>Pro</Badge>
+          {template?.mode==="docx"&&<Badge color={C.gold}>Smart Template</Badge>}
         </div>
 
         {/* Content */}
