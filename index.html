@@ -389,7 +389,7 @@ ${paragraphs}
 
 // ── IMPROVED: Split large docs into chunks for AI analysis ───────────────────
 const CHUNK_SIZE = 4000;  // chars per chunk sent to AI (Telugu chars are multi-byte, keep reasonable)
-const MAX_CHUNKS = 6;     // max chunks to analyze
+const MAX_CHUNKS = 4;     // max chunks (keep low for Groq free tier rate limits)
 
 // Sanitize document text before sending to AI — prevents JSON parse errors
 function sanitizeTextForAI(text){
@@ -488,20 +488,33 @@ DOCUMENT:
 ${text}`;
     }
 
-    const r=await fetch("https://api.groq.com/openai/v1/chat/completions",{
-      method:"POST",
-      headers:{"Content-Type":"application/json","Authorization":"Bearer "+apiKey},
-      body:JSON.stringify({model:"llama-3.3-70b-versatile",max_tokens:3000,messages:[{role:"user",content:prompt}]})
-    });
-    if(!r.ok){
-      if(r.status===413) throw new Error("Document chunk too large (413). Try a shorter section.");
-      if(r.status===401) throw new Error("Invalid API key (401).");
-      if(r.status===429) throw new Error("Rate limit (429). Wait a moment and retry.");
-      let bodyMsg="";
-      try{ const eb=await r.json(); bodyMsg=eb?.error?.message||""; }catch{}
-      throw new Error(`API error ${r.status}${bodyMsg?": "+bodyMsg:""}`);
+    // Retry with exponential backoff for 429 rate limit errors
+    let d;
+    for(let attempt=0; attempt<4; attempt++){
+      const r=await fetch("https://api.groq.com/openai/v1/chat/completions",{
+        method:"POST",
+        headers:{"Content-Type":"application/json","Authorization":"Bearer "+apiKey},
+        body:JSON.stringify({model:"llama-3.3-70b-versatile",max_tokens:3000,messages:[{role:"user",content:prompt}]})
+      });
+      if(r.status===429){
+        // Check Retry-After header, or use exponential backoff: 5s, 15s, 35s
+        const retryAfter = parseInt(r.headers.get("retry-after")||"0",10);
+        const wait = retryAfter>0 ? retryAfter*1000 : (attempt===0?5000: attempt===1?15000:35000);
+        addLog(`⏳ Rate limit hit — waiting ${Math.round(wait/1000)}s before retry ${attempt+1}/3...`);
+        await new Promise(res=>setTimeout(res, wait));
+        continue;
+      }
+      if(!r.ok){
+        if(r.status===413) throw new Error("Document chunk too large (413). Try a shorter section.");
+        if(r.status===401) throw new Error("Invalid API key (401).");
+        let bodyMsg="";
+        try{ const eb=await r.json(); bodyMsg=eb?.error?.message||""; }catch{}
+        throw new Error(`API error ${r.status}${bodyMsg?": "+bodyMsg:""}`);
+      }
+      d=await r.json();
+      break;
     }
-    const d=await r.json();
+    if(!d) throw new Error("Rate limit exceeded after 3 retries. Please wait a minute and try again.");
     const raw=d.choices?.[0]?.message?.content||"";
 
     // ── Robust JSON extraction & repair ───────────────────────────────────
@@ -578,7 +591,7 @@ ${text}`;
       const chunkResult = await callAIChunk(cleanChunk, mode, existingPlaceholders, i, numChunks);
       results.push(chunkResult);
       // Small delay between chunks to avoid rate limiting
-      if(i < numChunks-1) await new Promise(r=>setTimeout(r,400));
+      if(i < numChunks-1) await new Promise(r=>setTimeout(r,1500)); // Groq free tier: space out requests
     }
     const merged = mergeAiResults(results);
     addLog(`🔀 Merged: ${merged.fields.length} total fields from ${numChunks} chunks`);
