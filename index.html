@@ -557,12 +557,11 @@ ${text}`;
     }
   };
 
-  // ── Call Gemini API (single-shot, no chunking needed) ─────────────────────
+  // ── Call Gemini API — try ONCE, instantly fall back to Groq on any error ────
   const callGemini = async(text, mode, existingPlaceholders) => {
     addLog(`🌐 Gemini API — single-shot (large doc support)...`);
     const prompt = buildPrompt(text, mode, existingPlaceholders);
-    let d;
-    for(let attempt=0; attempt<5; attempt++){
+    try {
       const r = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${geminiKey}`,
         { method:"POST",
@@ -574,24 +573,24 @@ ${text}`;
         }
       );
       if(r.status===429){
-        const waits = [10000, 20000, 30000, 45000];
-        const wait = waits[attempt] || 60000;
-        addLog(`⏳ Gemini rate limit — waiting ${wait/1000}s (retry ${attempt+1}/4)...`);
-        await new Promise(res=>setTimeout(res,wait));
-        continue;
+        addLog(`⚠️ Gemini quota exceeded — instantly switching to Groq...`);
+        return null;
       }
       if(!r.ok){
         let msg="";
         try{ const e=await r.json(); msg=e?.error?.message||""; }catch{}
         if(r.status===400 && msg.includes("API_KEY")) throw new Error("Invalid Gemini API key.");
-        throw new Error(`Gemini API error ${r.status}${msg?": "+msg:""}`);
+        addLog(`⚠️ Gemini error ${r.status} — switching to Groq...`);
+        return null;
       }
-      d = await r.json();
-      break;
+      const d = await r.json();
+      const raw = d?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      return raw;
+    } catch(fetchErr){
+      if(fetchErr.message && fetchErr.message.includes("API key")) throw fetchErr;
+      addLog(`⚠️ Gemini unreachable — switching to Groq...`);
+      return null;
     }
-    if(!d) throw new Error("Gemini rate limit exceeded. Please wait and try again.");
-    const raw = d?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    return raw;
   };
 
   // ── Call Groq API chunk (with retry) ──────────────────────────────────────
@@ -743,11 +742,13 @@ ${text}`;
       addLog(`🔄 Gemini unavailable — using Groq as fallback (Telugu via Groq)`);
     }
 
-    // Fallback: if Gemini key missing but non-English, warn and use Groq
+    // No Gemini or Gemini failed — use Groq with transliteration pre-processing
     if(useGemini && !geminiKey){
-      addLog(`⚠️ Detected: ${lang} — no Gemini key, falling back to Groq (may have errors)`);
+      addLog(`⚠️ No Gemini key — using Groq for ${lang}`);
+    } else if(useGemini){
+      addLog(`🔄 Gemini unavailable — switching to Groq for ${lang}`);
     } else {
-      addLog(`🔍 Detected language: ${lang} → using Groq API (chunked)`);
+      addLog(`🔍 Detected: ${lang} → Groq`);
     }
 
     // Groq: chunk large documents
