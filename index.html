@@ -391,6 +391,18 @@ ${paragraphs}
 const CHUNK_SIZE = 3500;  // chars per chunk sent to AI
 const MAX_CHUNKS = 4;     // max chunks to analyze (to avoid too many API calls)
 
+// Sanitize document text before sending to AI — prevents JSON parse errors
+function sanitizeTextForAI(text){
+  return text
+    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')   // curly double quotes
+    .replace(/[\u2018\u2019\u201A\u201B\u2032]/g, "'") // curly single quotes
+    .replace(/[\u2013\u2014]/g, "-")                   // em/en dash
+    .replace(/[\u00A0]/g, " ")                          // non-breaking space
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g,"") // control chars
+    .replace(/\\/g, "\\\\")                                // escape backslashes
+    .trim();
+}
+
 function splitIntoChunks(text, chunkSize){
   if(text.length <= chunkSize) return [text];
   const chunks = [];
@@ -490,11 +502,76 @@ ${text}`;
     }
     const d=await r.json();
     const raw=d.choices?.[0]?.message?.content||"";
-    let jsonStr = raw.replace(/```json|```/g,"").trim();
+
+    // ── Robust JSON extraction & repair ───────────────────────────────────
+    // 1. Strip markdown fences
+    let jsonStr = raw.replace(/```json[\s\S]*?```|```[\s\S]*?```/g, s => {
+      const inner = s.replace(/```json|```/g,"").trim();
+      return inner;
+    }).trim();
+
+    // 2. Extract outermost { ... }
     const startIdx = jsonStr.indexOf('{');
     const endIdx = jsonStr.lastIndexOf('}');
     if(startIdx !== -1 && endIdx !== -1) jsonStr = jsonStr.slice(startIdx, endIdx+1);
-    const parsed=JSON.parse(jsonStr);
+
+    // 3. Sanitize: replace Telugu/Unicode curly quotes and special chars
+    //    that break JSON string parsing
+    jsonStr = jsonStr
+      .replace(/[“”„‟]/g, '\"')   // curly double quotes → escaped
+      .replace(/[‘’‚‛′]/g, "'") // curly single quotes → straight
+      .replace(/[–—]/g, "-")                   // em/en dash → hyphen
+      .replace(/[ ]/g, " ")                         // non-breaking space → space
+      .replace(/[ --]/g,""); // control chars
+
+    // 4. Fix unterminated strings: try to parse, if fail try progressive truncation
+    let parsed = null;
+    const tryParse = (s) => { try { return JSON.parse(s); } catch(e) { return null; } };
+
+    parsed = tryParse(jsonStr);
+
+    // 5. If still failing, try extracting just the fields array manually
+    if(!parsed){
+      // Try to close any open string/object by truncating at last complete field
+      // Strategy: find last complete },{ pattern and close the array+object there
+      const lastCompleteField = jsonStr.lastIndexOf('","find"');
+      const lastCloseObj = jsonStr.lastIndexOf('}', lastCompleteField > 0 ? lastCompleteField + 200 : jsonStr.length);
+      if(lastCloseObj > startIdx){
+        // Close off: ]} after last complete object
+        const truncated = jsonStr.slice(0, lastCloseObj+1) + ']}';
+        parsed = tryParse(truncated);
+      }
+    }
+
+    // 6. Last resort: regex-extract fields array
+    if(!parsed){
+      addLog("⚠️ JSON repair mode — extracting fields with regex");
+      const fieldsMatch = jsonStr.match(/"fields"\s*:\s*\[[\s\S]*?(?=\]\s*[,}]|\]\s*$)/);
+      const titleMatch = jsonStr.match(/"docTitle"\s*:\s*"([^"]+)"/);
+      const langMatch = jsonStr.match(/"language"\s*:\s*"([^"]+)"/);
+      let fields = [];
+      if(fieldsMatch){
+        try{
+          fields = JSON.parse(fieldsMatch[0].replace(/^"fields"\s*:\s*/,"") + "]");
+        }catch(e){
+          // Extract individual field objects
+          const fieldObjs = [...(fieldsMatch[0].matchAll(/\{[^{}]*"key"\s*:\s*"([A-Z0-9_]+)"[^{}]*\}/g)||[])];
+          fields = fieldObjs.map(m=>{
+            const obj = m[0];
+            const kv = (key) => { const r = obj.match(new RegExp('"'+key+'"\s*:\s*"([^"]*)"')); return r?r[1]:""; };
+            return { key:kv("key"), label:kv("label"), type:kv("type")||"text", required:true, sample:kv("sample"), find:kv("find")||kv("sample") };
+          });
+        }
+      }
+      parsed = {
+        docTitle: titleMatch?titleMatch[1]:"Document",
+        language: langMatch?langMatch[1]:"Auto",
+        fields: fields.filter(f=>f.key)
+      };
+    }
+
+    if(!parsed) throw new Error("Could not parse AI response as JSON. Please try again.");
+
     if(parsed.fields && Array.isArray(parsed.fields)){
       parsed.fields=parsed.fields.map(f=>{
         const k=f.key||f.field_key||f.name||f.fieldName||f.placeholder||
@@ -521,7 +598,8 @@ ${text}`;
 
     const results = [];
     for(let i=0; i<numChunks; i++){
-      const chunkResult = await callAIChunk(chunks[i], mode, existingPlaceholders, i, numChunks);
+      const cleanChunk = sanitizeTextForAI(chunks[i]);
+      const chunkResult = await callAIChunk(cleanChunk, mode, existingPlaceholders, i, numChunks);
       results.push(chunkResult);
       // Small delay between chunks to avoid rate limiting
       if(i < numChunks-1) await new Promise(r=>setTimeout(r,400));
