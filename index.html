@@ -564,7 +564,7 @@ ${text}`;
     let d;
     for(let attempt=0; attempt<5; attempt++){
       const r = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${geminiKey}`,
         { method:"POST",
           headers:{"Content-Type":"application/json"},
           body: JSON.stringify({
@@ -708,30 +708,39 @@ ${text}`;
     if(useGemini && geminiKey){
       const GEMINI_CHUNK = 30000;
       if(fullText.length <= GEMINI_CHUNK){
-        addLog(`🔍 Detected language: ${lang} → using Gemini API (single-shot)`);
+        addLog(`🔍 Detected: ${lang} → Gemini single-shot`);
         addLog(`📊 Document: ${fullText.length} chars — sending in full`);
         const cleanText = sanitizeTextForAI(fullText);
         const raw = await callGemini(cleanText, mode, existingPlaceholders);
-        const parsed = parseAIResponse(raw);
-        addLog(`✅ Gemini found ${parsed.fields?.length||0} fields`);
-        return parsed;
+        if(raw !== null){
+          const parsed = parseAIResponse(raw);
+          addLog(`✅ Gemini found ${parsed.fields?.length||0} fields`);
+          return parsed;
+        }
+        // Gemini quota exhausted → fall through to Groq below
       } else {
-        // Very large doc — split into 2 chunks for Gemini
+        // Large doc — 2 Gemini chunks
         const chunks = splitIntoChunks(fullText, GEMINI_CHUNK);
         const numChunks = Math.min(chunks.length, 2);
-        addLog(`🔍 Detected language: ${lang} → Gemini (${numChunks} chunks for large doc)`);
+        addLog(`🔍 Detected: ${lang} → Gemini ${numChunks} chunks`);
         const results = [];
+        let geminiOk = true;
         for(let i=0; i<numChunks; i++){
           addLog(`🌐 Gemini chunk ${i+1}/${numChunks}...`);
           const cleanChunk = sanitizeTextForAI(chunks[i]);
           const raw = await callGemini(cleanChunk, mode, existingPlaceholders);
+          if(raw === null){ geminiOk = false; break; }
           results.push(parseAIResponse(raw));
           if(i < numChunks-1) await new Promise(r=>setTimeout(r,5000));
         }
-        const merged = mergeAiResults(results);
-        addLog(`✅ Gemini merged: ${merged.fields.length} fields`);
-        return merged;
+        if(geminiOk && results.length > 0){
+          const merged = mergeAiResults(results);
+          addLog(`✅ Gemini merged: ${merged.fields.length} fields`);
+          return merged;
+        }
+        // Fall through to Groq
       }
+      addLog(`🔄 Gemini unavailable — using Groq as fallback (Telugu via Groq)`);
     }
 
     // Fallback: if Gemini key missing but non-English, warn and use Groq
