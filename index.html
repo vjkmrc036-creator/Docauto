@@ -464,7 +464,7 @@ Rules:
 - If the document already appears fully templated (no hardcoded values left), return {"docTitle":"...","language":"...","fields":[]}.
 
 DOCUMENT TEXT (extracted, may have line breaks normalized):
-${text.slice(0,8000)}`;
+${text.slice(0,4000)}`;
     } else {
       prompt=`You are a document automation expert. Analyze this document and identify ALL variable fields (names, dates, IDs, amounts, addresses).
 
@@ -481,15 +481,22 @@ Rules:
 - Keep standard/legal text unchanged
 
 DOCUMENT:
-${text.slice(0,6000)}`;
+${text.slice(0,3500)}`;
     }
 
     const r=await fetch("https://api.groq.com/openai/v1/chat/completions",{
       method:"POST",
       headers:{"Content-Type":"application/json","Authorization":"Bearer "+apiKey},
-      body:JSON.stringify({model:"llama-3.3-70b-versatile",max_tokens:4000,messages:[{role:"user",content:prompt}]})
+      body:JSON.stringify({model:"llama-3.3-70b-versatile",max_tokens:2500,messages:[{role:"user",content:prompt}]})
     });
-    if(!r.ok)throw new Error(`API error ${r.status}`);
+    if(!r.ok){
+      if(r.status===413) throw new Error("Document too large for AI analysis (413). Try a shorter document, or split it into sections.");
+      if(r.status===401) throw new Error("Invalid API key (401). Please reset your Groq API key.");
+      if(r.status===429) throw new Error("Rate limit reached (429). Wait a moment and try again.");
+      let bodyMsg="";
+      try{ const eb=await r.json(); bodyMsg=eb?.error?.message||""; }catch{}
+      throw new Error(`API error ${r.status}${bodyMsg?": "+bodyMsg:""}`);
+    }
     const d=await r.json();
     const raw=d.choices?.[0]?.message?.content||"";
     addLog("📦 "+raw.slice(0,120));
