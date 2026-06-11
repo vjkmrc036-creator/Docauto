@@ -105,19 +105,15 @@ function detectLanguage(text) {
 // ── API Key Setup ────────────────────────────────────────────────────────────
 function ApiSetup({onDone}) {
   const [groqKey,setGroqKey]=useState("");
-  const [geminiKey,setGeminiKey]=useState("");
   const [err,setErr]=useState("");
   const [showG,setShowG]=useState(false);
-  const [showGem,setShowGem]=useState(false);
   const save = () => {
     const g=groqKey.trim();
     if(!g){setErr("Groq API key is required");return;}
     if(!g.startsWith("gsk_")){setErr("Groq key must start with gsk_...");return;}
     if(g.length<40){setErr("Groq key looks too short");return;}
-    const gem=geminiKey.trim();
-    if(gem && !gem.startsWith("AIza")){setErr("Gemini key must start with AIza...");return;}
     setErr("");
-    onDone({groqKey:g, geminiKey:gem||""});
+    onDone({groqKey:g});
   };
   return(
     <div id="apiSetup">
@@ -125,14 +121,14 @@ function ApiSetup({onDone}) {
         <div style={{textAlign:"center",marginBottom:24}}>
           <div style={{fontSize:44,marginBottom:10}}>📋</div>
           <h1 style={{color:"#fff",fontSize:22,fontWeight:900,marginBottom:4}}>DocAuto AI</h1>
-          <p style={{color:"#6B84F5",fontSize:12}}>Smart dual-API: Groq for English · Gemini for Telugu & Indian languages</p>
+          <p style={{color:"#6B84F5",fontSize:12}}>Groq AI: English & Telugu Indian language documents</p>
         </div>
 
         {/* Groq Key */}
         <div style={{marginBottom:14}}>
           <label style={{color:"#94A3B8",fontSize:11,fontWeight:700,display:"block",marginBottom:6}}>
             ⚡ GROQ API KEY <span style={{color:C.rose}}>*required</span>
-            <span style={{color:"#6B84F5",fontWeight:400,marginLeft:6}}>— English documents</span>
+            <span style={{color:"#6B84F5",fontWeight:400,marginLeft:6}}>— All languages (English · Telugu · Hindi)</span>
           </label>
           <div style={{position:"relative"}}>
             <input value={groqKey} onChange={e=>setGroqKey(e.target.value)} placeholder="gsk_..."
@@ -148,33 +144,12 @@ function ApiSetup({onDone}) {
           </div>
         </div>
 
-        {/* Gemini Key */}
-        <div style={{marginBottom:16}}>
-          <label style={{color:"#94A3B8",fontSize:11,fontWeight:700,display:"block",marginBottom:6}}>
-            🌐 GEMINI API KEY <span style={{color:C.amber,fontWeight:400}}>optional</span>
-            <span style={{color:"#6B84F5",fontWeight:400,marginLeft:6}}>— Telugu/Hindi/Tamil etc.</span>
-          </label>
-          <div style={{position:"relative"}}>
-            <input value={geminiKey} onChange={e=>setGeminiKey(e.target.value)} placeholder="AIzaSy... (from aistudio.google.com)"
-              type={showGem?"text":"password"}
-              style={{width:"100%",padding:"11px 44px 11px 12px",background:"#0B1437",
-                border:"2px solid "+(err&&geminiKey&&!geminiKey.startsWith("AIza")?"#F43F5E":"#06BEB640"),
-                borderRadius:9,color:"#fff",fontSize:13,outline:"none",boxSizing:"border-box"}}/>
-            <button onClick={()=>setShowGem(p=>!p)}
-              style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",
-                background:"none",border:"none",color:"#06BEB6",cursor:"pointer",fontSize:15}}>
-              {showGem?"🙈":"👁"}
-            </button>
-          </div>
-          {!geminiKey&&<p style={{color:"#6B84F5",fontSize:11,marginTop:4}}>
-            💡 Without Gemini key, Telugu docs will use Groq (may have JSON parse errors)
-          </p>}
-        </div>
+
 
         {err&&<p style={{color:"#F43F5E",fontSize:12,marginBottom:10}}>⚠ {err}</p>}
         <Btn full color={C.indigo} onClick={save} disabled={!groqKey.trim()}>🚀 Save Keys & Start App</Btn>
 
-        <div style={{marginTop:16,display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+        <div style={{marginTop:16,display:"grid",gridTemplateColumns:"1fr",gap:10}}>
           <div style={{padding:12,background:"#0B143780",borderRadius:9,border:"1px solid #4361EE30"}}>
             <p style={{color:"#94A3B8",fontSize:11,lineHeight:1.6,margin:0}}>
               <strong style={{color:"#6B84F5"}}>Groq (free):</strong><br/>
@@ -183,14 +158,7 @@ function ApiSetup({onDone}) {
               <span style={{color:"#F4A828"}}>starts with gsk_</span>
             </p>
           </div>
-          <div style={{padding:12,background:"#0B143780",borderRadius:9,border:"1px solid #06BEB630"}}>
-            <p style={{color:"#94A3B8",fontSize:11,lineHeight:1.6,margin:0}}>
-              <strong style={{color:"#06BEB6"}}>Gemini (free):</strong><br/>
-              aistudio.google.com<br/>
-              Get API Key → Create<br/>
-              <span style={{color:"#F4A828"}}>starts with AIzaSy</span>
-            </p>
-          </div>
+
         </div>
       </div>
     </div>
@@ -318,46 +286,19 @@ function fillPlaceholdersInXml(xml, values){
 }
 
 function applyPlaceholderConversions(xml, replacements){
-  if(!replacements||replacements.length===0) return healPlaceholders(xml);
-  // Process paragraph by paragraph — merge all runs first, replace, then rebuild
-  const result = xml.replace(/(<w:p\b[\s\S]*?<\/w:p>)/g, (para) => {
-    const runRe = /(<w:r\b[^>]*>)([\s\S]*?)(<\/w:r>)/g;
-    const runs = [];
-    let m;
-    // Reset lastIndex for safety
-    runRe.lastIndex = 0;
-    while((m=runRe.exec(para))!==null){
-      const rBody=m[2];
-      const rPrM=rBody.match(/(<w:rPr>[\s\S]*?<\/w:rPr>)/);
-      const rPr=rPrM?rPrM[1]:"";
-      let text="";
-      const tRe=/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g; let tm;
-      while((tm=tRe.exec(rBody))!==null) text+=decodeXmlEntities(tm[1]);
-      runs.push({start:m.index, end:m.index+m[0].length, rPr, text});
-    }
-    if(runs.length===0) return para;
-    let fullText = runs.map(r=>r.text).join("");
-    let replacedText = fullText;
-    for(const {find,key} of replacements){
-      if(!find||!find.trim()) continue;
-      replacedText = replacedText.split(find.trim()).join("{{"+key+"}}");
-    }
-    if(replacedText===fullText) return para;
-    // Put all text into first text-bearing run, remove text from rest
-    const firstIdx = runs.findIndex(r=>r.text.length>0);
-    if(firstIdx===-1) return para;
-    let newPara = para;
-    for(let i=runs.length-1;i>=0;i--){
-      const r=runs[i];
-      const newText = i===firstIdx ? replacedText : "";
-      const newRun = newText.length>0
-        ? "<w:r>"+r.rPr+"<w:t xml:space=\"preserve\">"+encodeXmlEntities(newText)+"</w:t></w:r>"
-        : r.rPr ? "<w:r>"+r.rPr+"</w:r>" : "";
-      newPara = newPara.slice(0,r.start)+newRun+newPara.slice(r.end);
-    }
-    return newPara;
-  });
-  return healPlaceholders(result);
+  let healed = healPlaceholders(xml);
+  for(const {find,key} of (replacements||[])){
+    if(!find || !find.trim()) continue;
+    const escFind = find.trim();
+    healed = healed.replace(/<w:t((?:\s[^>]*)?)>([\s\S]*?)<\/w:t>/g, (full, attrs, inner) => {
+      const decoded = decodeXmlEntities(inner);
+      if(!decoded.includes(escFind)) return full;
+      const replaced = decoded.split(escFind).join(`{{${key}}}`);
+      const preserve = attrs.includes("xml:space") ? attrs : attrs+' xml:space="preserve"';
+      return `<w:t${preserve}>${encodeXmlEntities(replaced)}</w:t>`;
+    });
+  }
+  return healed;
 }
 
 function findExistingPlaceholders(xml){
@@ -568,7 +509,7 @@ function mergeAiResults(results){
 }
 
 // ── Convert Module ───────────────────────────────────────────────────────────
-function Convert({groqKey, geminiKey, onDone}) {
+function Convert({groqKey, onDone}) {
   const [phase,setPhase]=useState("idle");
   const [log,setLog]=useState([]);
   const [result,setResult]=useState(null);
@@ -616,41 +557,6 @@ ${text}`;
     }
   };
 
-  // ── Call Gemini API — try ONCE, instantly fall back to Groq on any error ────
-  const callGemini = async(text, mode, existingPlaceholders) => {
-    addLog(`🌐 Gemini API — single-shot (large doc support)...`);
-    const prompt = buildPrompt(text, mode, existingPlaceholders);
-    try {
-      const r = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${geminiKey}`,
-        { method:"POST",
-          headers:{"Content-Type":"application/json"},
-          body: JSON.stringify({
-            contents:[{parts:[{text: prompt}]}],
-            generationConfig:{maxOutputTokens:8192, temperature:0.1}
-          })
-        }
-      );
-      if(r.status===429){
-        addLog(`⚠️ Gemini quota exceeded — instantly switching to Groq...`);
-        return null;
-      }
-      if(!r.ok){
-        let msg="";
-        try{ const e=await r.json(); msg=e?.error?.message||""; }catch{}
-        if(r.status===400 && msg.includes("API_KEY")) throw new Error("Invalid Gemini API key.");
-        addLog(`⚠️ Gemini error ${r.status} — switching to Groq...`);
-        return null;
-      }
-      const d = await r.json();
-      const raw = d?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-      return raw;
-    } catch(fetchErr){
-      if(fetchErr.message && fetchErr.message.includes("API key")) throw fetchErr;
-      addLog(`⚠️ Gemini unreachable — switching to Groq...`);
-      return null;
-    }
-  };
 
   // ── Call Groq API chunk (with retry) ──────────────────────────────────────
   const callGroqChunk = async(text, mode, existingPlaceholders, chunkIdx, totalChunks) => {
@@ -757,60 +663,12 @@ ${text}`;
     return parsed;
   };
 
-  // ── Main dispatcher: auto-route to Groq (English) or Gemini (regional) ───
+  // ── Main dispatcher: always Groq with Telugu→Tanglish pre-processing ────────
   const callAI = async(fullText, mode, existingPlaceholders) => {
     const {lang, useGemini} = detectLanguage(fullText);
+    addLog(`🔍 Detected: ${lang} → Groq`);
 
-    // Use Gemini for regional languages
-    // Gemini 2.0-flash supports 1M tokens — chunk only if very large (>30000 chars)
-    if(useGemini && geminiKey){
-      const GEMINI_CHUNK = 30000;
-      if(fullText.length <= GEMINI_CHUNK){
-        addLog(`🔍 Detected: ${lang} → Gemini single-shot`);
-        addLog(`📊 Document: ${fullText.length} chars — sending in full`);
-        const cleanText = sanitizeTextForAI(fullText);
-        const raw = await callGemini(cleanText, mode, existingPlaceholders);
-        if(raw !== null){
-          const parsed = parseAIResponse(raw);
-          addLog(`✅ Gemini found ${parsed.fields?.length||0} fields`);
-          return parsed;
-        }
-        // Gemini quota exhausted → fall through to Groq below
-      } else {
-        // Large doc — 2 Gemini chunks
-        const chunks = splitIntoChunks(fullText, GEMINI_CHUNK);
-        const numChunks = Math.min(chunks.length, 2);
-        addLog(`🔍 Detected: ${lang} → Gemini ${numChunks} chunks`);
-        const results = [];
-        let geminiOk = true;
-        for(let i=0; i<numChunks; i++){
-          addLog(`🌐 Gemini chunk ${i+1}/${numChunks}...`);
-          const cleanChunk = sanitizeTextForAI(chunks[i]);
-          const raw = await callGemini(cleanChunk, mode, existingPlaceholders);
-          if(raw === null){ geminiOk = false; break; }
-          results.push(parseAIResponse(raw));
-          if(i < numChunks-1) await new Promise(r=>setTimeout(r,5000));
-        }
-        if(geminiOk && results.length > 0){
-          const merged = mergeAiResults(results);
-          addLog(`✅ Gemini merged: ${merged.fields.length} fields`);
-          return merged;
-        }
-        // Fall through to Groq
-      }
-      addLog(`🔄 Gemini unavailable — using Groq as fallback (Telugu via Groq)`);
-    }
-
-    // No Gemini or Gemini failed — use Groq with transliteration pre-processing
-    if(useGemini && !geminiKey){
-      addLog(`⚠️ No Gemini key — using Groq for ${lang}`);
-    } else if(useGemini){
-      addLog(`🔄 Gemini unavailable — switching to Groq for ${lang}`);
-    } else {
-      addLog(`🔍 Detected: ${lang} → Groq`);
-    }
-
-    // Groq: convert Telugu→Tanglish first (reduces tokens, improves JSON output)
+    // Convert Telugu/regional script → Tanglish (reduces tokens, improves JSON output)
     const groqText = useGemini ? teluguToTanglish(fullText) : fullText;
     if(useGemini && groqText !== fullText){
       addLog(`🔤 Telugu→Tanglish conversion for Groq (saves tokens)`);
@@ -909,7 +767,7 @@ ${text}`;
   if(phase==="idle") return(
     <div className="fadein">
       <Heading title="Convert Document → Fillable Template"
-        sub="English → Groq (chunked) · Telugu/Hindi/Tamil → Gemini (single-shot). Upload DOCX or paste text."/>
+        sub="All languages via Groq (Telugu auto-transliterated). Upload DOCX or paste text."/>
       <Card>
         <div onClick={()=>fileRef.current.click()}
           style={{border:"2px dashed #CBD5E1",borderRadius:12,padding:"36px 16px",textAlign:"center",background:C.bg,cursor:"pointer"}}
@@ -933,8 +791,8 @@ ${text}`;
           </Btn>
           {pasteText.length>3000 && (()=>{
             const {lang,useGemini}=detectLanguage(pasteText);
-            return useGemini && geminiKey
-              ? <Badge color={C.teal}>🌐 {lang} → Gemini single-shot ({pasteText.length} chars)</Badge>
+            return useGemini
+              ? <Badge color={C.teal}>🔤 {lang} → Groq+Tanglish ({pasteText.length} chars)</Badge>
               : <Badge color={C.amber}>⚡ Long doc: {pasteText.length} chars → {Math.min(splitIntoChunks(pasteText,CHUNK_SIZE).length,MAX_CHUNKS)} Groq chunks</Badge>;
           })()}
         </div>
@@ -1051,18 +909,11 @@ function DocxConvertReview({result, setResult, onDone, onReset}){
   const editField=(i,key,val)=>{
     setResult(r=>{const nf=[...r.newFields];nf[i]={...nf[i],[key]:val};return {...r,newFields:nf};});
   };
-  const [templateXml, setTemplateXml] = React.useState(null);
-
-  const getTemplateXml = () => {
+  const proceed=()=>{
     const chosen = result.newFields.filter((f,i)=>result.selectedNew[i]);
     let xml = result.documentXml;
     if(chosen.length){ xml = applyPlaceholderConversions(xml, chosen.map(f=>({find:f.find,key:f.key}))); }
     else { xml = healPlaceholders(xml); }
-    return {xml, chosen};
-  };
-
-  const proceed=()=>{
-    const {xml, chosen} = getTemplateXml();
     const allFields = [
       ...result.existingFields,
       ...chosen.map(f=>({key:f.key,label:f.label,type:f.type,required:f.required,sample:f.sample}))
@@ -1070,41 +921,6 @@ function DocxConvertReview({result, setResult, onDone, onReset}){
     onDone({mode:"docx",docTitle:result.docTitle,language:result.language,fileName:result.fileName,
       zip:result.zip,documentXml:xml,headerFooterPaths:result.headerFooterPaths,fields:allFields});
   };
-
-  const dlTemplate = async() => {
-    const {xml, chosen} = getTemplateXml();
-    const allFields = [
-      ...result.existingFields,
-      ...chosen.map(f=>({key:f.key,label:f.label,type:f.type,required:f.required,sample:f.sample}))
-    ];
-    const blob = await buildDocxBlob(result.zip, xml);
-    const baseName = (result.docTitle||"template").replace(/\s+/g,"_");
-    downloadBlob(blob, baseName+"_TEMPLATE.docx");
-  };
-
-  const dlExcel = () => {
-    const chosen = result.newFields.filter((f,i)=>result.selectedNew[i]);
-    const allFields = [
-      ...result.existingFields,
-      ...chosen.map(f=>({key:f.key,label:f.label,type:f.type,required:f.required,sample:f.sample}))
-    ];
-    // Header row + data rows starting row 5 (match Python script format)
-    const aoa = [
-      ["Placeholder","Label","Value (edit this)"],
-      ["","",""],
-      ["","",""],
-      ["","",""],
-      ...allFields.map(f=>[`{{${f.key}}}`, f.label||f.key, f.sample||""])
-    ];
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws["!cols"] = [{wch:30},{wch:30},{wch:40}];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "MASTER_DATA");
-    const out = XLSX.write(wb, {bookType:"xlsx", type:"array"});
-    const baseName = (result.docTitle||"deed").replace(/\s+/g,"_");
-    downloadBlob(new Blob([out],{type:"application/octet-stream"}), baseName+"_MASTER_DATA.xlsx");
-  };
-
   const total = result.existingFields.length + result.newFields.filter((f,i)=>result.selectedNew[i]).length;
   return(
     <div className="fadein">
@@ -1161,15 +977,6 @@ function DocxConvertReview({result, setResult, onDone, onReset}){
           <p style={{margin:0,fontSize:13,color:C.green,fontWeight:700}}>✅ Document already fully templated — no new hardcoded values detected.</p>
         </Card>
       )}
-      {/* Download buttons — template DOCX + Excel */}
-      <Card style={{marginBottom:14,background:"#F0FDF4",border:"1px solid #BBF7D0"}}>
-        <h4 style={{margin:"0 0 10px",fontSize:13,fontWeight:800,color:C.green}}>⬇ Download Generated Files</h4>
-        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-          <Btn color={C.teal} onClick={dlTemplate} icon="📄">Template DOCX (with {{placeholders}})</Btn>
-          <Btn color={C.gold} onClick={dlExcel} icon="📊">Master Data Excel</Btn>
-        </div>
-        <p style={{margin:"8px 0 0",fontSize:11,color:C.muted}}>Template has all values replaced with {{PLACEHOLDERS}}. Excel has Column A = placeholder, Column C = value (edit and re-upload to generate).</p>
-      </Card>
       <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
         <Btn color={C.indigo} onClick={proceed} icon="✍️">Fill This Template ({total} fields)</Btn>
         <Btn outline color={C.slate} onClick={onReset}>Convert Another</Btn>
@@ -1198,7 +1005,6 @@ function Fill({template, addRecord}) {
   const [docxBlob2,setDocxBlob2]=useState(null); // Part 2 if split
   const [generating,setGenerating]=useState(false);
   const [genStatus,setGenStatus]=useState("");
-  const [missedKeys,setMissedKeys]=useState([]);
 
   useEffect(()=>{
     const o={};(fields||[]).forEach(f=>{o[f.key]=f.sample||"";});
@@ -1231,16 +1037,8 @@ function Fill({template, addRecord}) {
       if(isDocx){
         setGenStatus("Filling placeholders...");
         const filledXml = fillPlaceholdersInXml(tpl.documentXml, vals);
-        // Detect missed placeholders
-        const stillMissing = [...filledXml.matchAll(/\{\{([A-Za-z0-9_]+)\}\}/g)].map(m=>m[1]);
-        const uniqueMissing = [...new Set(stillMissing)];
-        if(uniqueMissing.length>0){
-          setGenStatus("⚠️ Missed: "+uniqueMissing.join(", "));
-          await new Promise(r=>setTimeout(r,2000));
-        }
         setGenStatus("Building DOCX file...");
         const blob = await buildDocxBlob(tpl.zip, filledXml);
-        setMissedKeys(uniqueMissing);
         setDocxBlob(blob);setDocxBlob2(null);
         const previewText = extractParagraphsFromXml(filledXml).join("\n");
         setDoc(previewText);
@@ -1347,19 +1145,6 @@ ${doc.split("\n").map(l=>`<p>${l?l.replace(/&/g,"&amp;").replace(/</g,"&lt;").re
         <Btn outline color={C.slate} onClick={()=>{const o={};(fields||[]).forEach(f=>{o[f.key]="";});setVals(o);setDone(false);setDocxBlob(null);setDocxBlob2(null);}}>Clear</Btn>
       </div>
 
-      {done&&missedKeys.length>0&&(
-        <div className="fadein">
-          <Card style={{background:C.rose+"0A",border:`2px solid ${C.rose}40`,marginBottom:14}}>
-            <p style={{fontWeight:800,color:C.rose,margin:"0 0 6px"}}>⚠️ {missedKeys.length} placeholder(s) not filled!</p>
-            <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
-              {missedKeys.map(k=>(
-                <code key={k} style={{fontSize:11,color:C.rose,background:C.rose+"12",padding:"2px 8px",borderRadius:5}}>{`{{${k}}}`}</code>
-              ))}
-            </div>
-            <p style={{margin:"6px 0 0",fontSize:12,color:C.muted}}>These are still in the document. Go to Editor tab to add them, or fill the values above and regenerate.</p>
-          </Card>
-        </div>
-      )}
       {done&&(
         <div className="fadein">
           <Card style={{background:C.green+"0A",border:`2px solid ${C.green}40`,marginBottom:14}}>
@@ -1765,7 +1550,7 @@ const NAV=[
 
 // ── ROOT APP ─────────────────────────────────────────────────────────────────
 function App() {
-  const [keys,setKeys]=useState(null); // {groqKey, geminiKey}
+  const [keys,setKeys]=useState(null); // {groqKey}
   const [active,setActive]=useState("convert");
   const [sidebar,setSidebar]=useState(true);
   const [template,setTemplate]=useState(null);
@@ -1773,11 +1558,11 @@ function App() {
 
   if(!keys) return <ApiSetup onDone={k=>setKeys(k)}/>;
 
-  const {groqKey, geminiKey} = keys;
+  const {groqKey} = keys;
   const addRecord=rec=>setRecords(p=>[...p,rec]);
 
   const modules={
-    convert:()=><Convert groqKey={groqKey} geminiKey={geminiKey} onDone={r=>{setTemplate(r);setActive("fill");}}/>,
+    convert:()=><Convert groqKey={groqKey} onDone={r=>{setTemplate(r);setActive("fill");}}/>,
     fill:   ()=><Fill template={template} addRecord={addRecord}/>,
     editor: ()=><Editor template={template} onUpdate={setTemplate}/>,
     chat:   ()=><Chat template={template} apiKey={groqKey}/>,
