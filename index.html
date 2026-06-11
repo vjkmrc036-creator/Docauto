@@ -77,50 +77,120 @@ const Heading = ({title,sub}) => (
   </div>
 );
 
+// ── Language detection helper ────────────────────────────────────────────────
+function detectLanguage(text) {
+  // Count Telugu Unicode chars (U+0C00–U+0C7F)
+  const teluguCount = (text.match(/[ఀ-౿]/g)||[]).length;
+  // Count Hindi/Devanagari (U+0900–U+097F)
+  const hindiCount  = (text.match(/[ऀ-ॿ]/g)||[]).length;
+  // Count Tamil (U+0B80–U+0BFF)
+  const tamilCount  = (text.match(/[஀-௿]/g)||[]).length;
+  // Count Kannada (U+0C80–U+0CFF)
+  const kannadaCount= (text.match(/[ಀ-೿]/g)||[]).length;
+  // Count Malayalam (U+0D00–U+0D7F)
+  const malayalamCount=(text.match(/[ഀ-ൿ]/g)||[]).length;
+  const nonEnglishTotal = teluguCount+hindiCount+tamilCount+kannadaCount+malayalamCount;
+  // If more than 20 non-English chars → treat as regional language
+  if(nonEnglishTotal > 20) {
+    if(teluguCount >= hindiCount && teluguCount >= tamilCount) return {lang:"Telugu", useGemini:true};
+    if(hindiCount > teluguCount) return {lang:"Hindi", useGemini:true};
+    if(tamilCount > teluguCount) return {lang:"Tamil", useGemini:true};
+    if(kannadaCount > 0) return {lang:"Kannada", useGemini:true};
+    if(malayalamCount > 0) return {lang:"Malayalam", useGemini:true};
+    return {lang:"Regional", useGemini:true};
+  }
+  return {lang:"English", useGemini:false};
+}
+
 // ── API Key Setup ────────────────────────────────────────────────────────────
 function ApiSetup({onDone}) {
-  const [key,setKey]=useState("");
+  const [groqKey,setGroqKey]=useState("");
+  const [geminiKey,setGeminiKey]=useState("");
   const [err,setErr]=useState("");
-  const [show,setShow]=useState(false);
+  const [showG,setShowG]=useState(false);
+  const [showGem,setShowGem]=useState(false);
   const save = () => {
-    const k=key.trim();
-    if(!k){setErr("Please paste your API key");return;}
-    if(!k.startsWith("gsk_")){setErr("Key must start with gsk_...");return;}
-    if(k.length<40){setErr("Key looks too short");return;}
-    setErr("");onDone(k);
+    const g=groqKey.trim();
+    if(!g){setErr("Groq API key is required");return;}
+    if(!g.startsWith("gsk_")){setErr("Groq key must start with gsk_...");return;}
+    if(g.length<40){setErr("Groq key looks too short");return;}
+    const gem=geminiKey.trim();
+    if(gem && !gem.startsWith("AIza")){setErr("Gemini key must start with AIza...");return;}
+    setErr("");
+    onDone({groqKey:g, geminiKey:gem||""});
   };
   return(
     <div id="apiSetup">
-      <div className="setupCard">
-        <div style={{textAlign:"center",marginBottom:28}}>
-          <div style={{fontSize:48,marginBottom:12}}>📋</div>
-          <h1 style={{color:"#fff",fontSize:22,fontWeight:900,marginBottom:6}}>DocAuto AI</h1>
-          <p style={{color:"#6B84F5",fontSize:13}}>Document Automation Platform</p>
+      <div className="setupCard" style={{maxWidth:460}}>
+        <div style={{textAlign:"center",marginBottom:24}}>
+          <div style={{fontSize:44,marginBottom:10}}>📋</div>
+          <h1 style={{color:"#fff",fontSize:22,fontWeight:900,marginBottom:4}}>DocAuto AI</h1>
+          <p style={{color:"#6B84F5",fontSize:12}}>Smart dual-API: Groq for English · Gemini for Telugu & Indian languages</p>
         </div>
-        <div style={{marginBottom:16}}>
-          <label style={{color:"#94A3B8",fontSize:12,fontWeight:700,display:"block",marginBottom:8}}>GROQ API KEY (FREE)</label>
+
+        {/* Groq Key */}
+        <div style={{marginBottom:14}}>
+          <label style={{color:"#94A3B8",fontSize:11,fontWeight:700,display:"block",marginBottom:6}}>
+            ⚡ GROQ API KEY <span style={{color:C.rose}}>*required</span>
+            <span style={{color:"#6B84F5",fontWeight:400,marginLeft:6}}>— English documents</span>
+          </label>
           <div style={{position:"relative"}}>
-            <input value={key} onChange={e=>setKey(e.target.value)} placeholder="gsk_..."
-              type={show?"text":"password"}
-              style={{width:"100%",padding:"12px 44px 12px 14px",background:"#0B1437",
-                border:"2px solid "+(err?"#F43F5E":"#4361EE40"),
-                borderRadius:10,color:"#fff",fontSize:14,outline:"none",boxSizing:"border-box"}}/>
-            <button onClick={()=>setShow(p=>!p)}
-              style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",
-                background:"none",border:"none",color:"#6B84F5",cursor:"pointer",fontSize:16}}>
-              {show?"🙈":"👁"}
+            <input value={groqKey} onChange={e=>setGroqKey(e.target.value)} placeholder="gsk_..."
+              type={showG?"text":"password"}
+              style={{width:"100%",padding:"11px 44px 11px 12px",background:"#0B1437",
+                border:"2px solid "+(err&&!groqKey.trim()?"#F43F5E":"#4361EE40"),
+                borderRadius:9,color:"#fff",fontSize:13,outline:"none",boxSizing:"border-box"}}/>
+            <button onClick={()=>setShowG(p=>!p)}
+              style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",
+                background:"none",border:"none",color:"#6B84F5",cursor:"pointer",fontSize:15}}>
+              {showG?"🙈":"👁"}
             </button>
           </div>
-          {err&&<p style={{color:"#F43F5E",fontSize:12,marginTop:6}}>⚠ {err}</p>}
         </div>
-        <Btn full color={C.indigo} onClick={save} disabled={!key.trim()}>🚀 Save Key & Start App</Btn>
-        <div style={{marginTop:20,padding:14,background:"#0B143780",borderRadius:10,border:"1px solid #4361EE30"}}>
-          <p style={{color:"#94A3B8",fontSize:12,lineHeight:1.7,margin:0}}>
-            <strong style={{color:"#6B84F5"}}>Free Groq API key:</strong><br/>
-            1. Go to <strong style={{color:"#F4A828"}}>console.groq.com</strong><br/>
-            2. Sign up → API Keys → Create Key<br/>
-            3. Copy the key (starts with gsk_...)
-          </p>
+
+        {/* Gemini Key */}
+        <div style={{marginBottom:16}}>
+          <label style={{color:"#94A3B8",fontSize:11,fontWeight:700,display:"block",marginBottom:6}}>
+            🌐 GEMINI API KEY <span style={{color:C.amber,fontWeight:400}}>optional</span>
+            <span style={{color:"#6B84F5",fontWeight:400,marginLeft:6}}>— Telugu/Hindi/Tamil etc.</span>
+          </label>
+          <div style={{position:"relative"}}>
+            <input value={geminiKey} onChange={e=>setGeminiKey(e.target.value)} placeholder="AIzaSy... (from aistudio.google.com)"
+              type={showGem?"text":"password"}
+              style={{width:"100%",padding:"11px 44px 11px 12px",background:"#0B1437",
+                border:"2px solid "+(err&&geminiKey&&!geminiKey.startsWith("AIza")?"#F43F5E":"#06BEB640"),
+                borderRadius:9,color:"#fff",fontSize:13,outline:"none",boxSizing:"border-box"}}/>
+            <button onClick={()=>setShowGem(p=>!p)}
+              style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",
+                background:"none",border:"none",color:"#06BEB6",cursor:"pointer",fontSize:15}}>
+              {showGem?"🙈":"👁"}
+            </button>
+          </div>
+          {!geminiKey&&<p style={{color:"#6B84F5",fontSize:11,marginTop:4}}>
+            💡 Without Gemini key, Telugu docs will use Groq (may have JSON parse errors)
+          </p>}
+        </div>
+
+        {err&&<p style={{color:"#F43F5E",fontSize:12,marginBottom:10}}>⚠ {err}</p>}
+        <Btn full color={C.indigo} onClick={save} disabled={!groqKey.trim()}>🚀 Save Keys & Start App</Btn>
+
+        <div style={{marginTop:16,display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <div style={{padding:12,background:"#0B143780",borderRadius:9,border:"1px solid #4361EE30"}}>
+            <p style={{color:"#94A3B8",fontSize:11,lineHeight:1.6,margin:0}}>
+              <strong style={{color:"#6B84F5"}}>Groq (free):</strong><br/>
+              console.groq.com<br/>
+              API Keys → Create Key<br/>
+              <span style={{color:"#F4A828"}}>starts with gsk_</span>
+            </p>
+          </div>
+          <div style={{padding:12,background:"#0B143780",borderRadius:9,border:"1px solid #06BEB630"}}>
+            <p style={{color:"#94A3B8",fontSize:11,lineHeight:1.6,margin:0}}>
+              <strong style={{color:"#06BEB6"}}>Gemini (free):</strong><br/>
+              aistudio.google.com<br/>
+              Get API Key → Create<br/>
+              <span style={{color:"#F4A828"}}>starts with AIzaSy</span>
+            </p>
+          </div>
         </div>
       </div>
     </div>
@@ -439,7 +509,7 @@ function mergeAiResults(results){
 }
 
 // ── Convert Module ───────────────────────────────────────────────────────────
-function Convert({apiKey,onDone}) {
+function Convert({groqKey, geminiKey, onDone}) {
   const [phase,setPhase]=useState("idle");
   const [log,setLog]=useState([]);
   const [result,setResult]=useState(null);
@@ -449,19 +519,16 @@ function Convert({apiKey,onDone}) {
 
   const addLog=msg=>setLog(p=>[...p,msg]);
 
-  const callAIChunk = async(text, mode, existingPlaceholders, chunkIdx, totalChunks) => {
-    const chunkLabel = totalChunks > 1 ? ` (chunk ${chunkIdx+1}/${totalChunks})` : "";
-    addLog(`🤖 AI analyzing${chunkLabel}...`);
-
-    let prompt;
+  // ── Build prompt ─────────────────────────────────────────────────────────
+  const buildPrompt = (text, mode, existingPlaceholders) => {
     if(mode==="docx"){
-      prompt=`You are a document automation expert working with extracted text from an Indian legal/government Word document (.docx).
+      return `You are a document automation expert working with extracted text from an Indian legal/government Word document (.docx).
 Existing placeholders already found: ${JSON.stringify(existingPlaceholders||[])}
 
 TASK: Find every hardcoded variable value (names, dates, ages, Aadhaar/PAN/IDs, amounts, addresses, survey numbers, districts, mandals, etc.) NOT already a {{...}} placeholder, and propose converting each to a {{UPPER_SNAKE_CASE}} placeholder.
 
-Return ONLY raw JSON, no markdown, no code fences:
-{"docTitle":"Document Type","language":"English or Telugu etc","fields":[{"key":"FIELD_KEY","label":"Human readable label","type":"text|date|number|id|address|currency","required":true,"sample":"EXACT literal text found","find":"EXACT substring to search-and-replace (verbatim, including spacing/punctuation)"}]}
+Return ONLY raw JSON, no markdown, no code fences. Escape all backslashes and quotes inside string values:
+{"docTitle":"Document Type","language":"English or Telugu etc","fields":[{"key":"FIELD_KEY","label":"Human readable label","type":"text|date|number|id|address|currency","required":true,"sample":"EXACT literal text found","find":"EXACT substring to search-and-replace"}]}
 
 Rules:
 - "find" must match EXACTLY as it appears in the document text
@@ -473,10 +540,11 @@ Rules:
 DOCUMENT TEXT:
 ${text}`;
     } else {
-      prompt=`You are a document automation expert. Analyze this Indian legal/government document text and identify ALL variable fields (names, dates, IDs, amounts, addresses).
+      return `You are a document automation expert. Analyze this Indian legal/government document text and identify ALL variable fields (names, dates, IDs, amounts, addresses).
 
-Return ONLY raw JSON (no markdown, no code fences):
-{"templateText":"document text with {{PLACEHOLDER_KEY}} substitutions for ALL variable values","fields":[{"key":"PLACEHOLDER_KEY","label":"Human readable label","type":"text|date|number|id|address|currency","required":true,"sample":"original value from doc"}],"docTitle":"Document Type","language":"English or Telugu etc"}
+Return ONLY raw JSON (no markdown, no code fences, no trailing text).
+CRITICAL: Escape all backslashes and internal quotes in string values. No raw newlines inside strings.
+{"templateText":"document text with {{PLACEHOLDER_KEY}} substitutions","fields":[{"key":"PLACEHOLDER_KEY","label":"Human readable label","type":"text|date|number|id|address|currency","required":true,"sample":"original value"}],"docTitle":"Document Type","language":"English or Telugu etc"}
 
 Rules:
 - UPPERCASE_SNAKE_CASE keys
@@ -487,111 +555,181 @@ Rules:
 DOCUMENT:
 ${text}`;
     }
+  };
 
-    // Retry with exponential backoff for 429 rate limit errors
+  // ── Call Gemini API (single-shot, no chunking needed) ─────────────────────
+  const callGemini = async(text, mode, existingPlaceholders) => {
+    addLog(`🌐 Gemini API — single-shot (large doc support)...`);
+    const prompt = buildPrompt(text, mode, existingPlaceholders);
+    let d;
+    for(let attempt=0; attempt<3; attempt++){
+      const r = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`,
+        { method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({
+            contents:[{parts:[{text: prompt}]}],
+            generationConfig:{maxOutputTokens:8192, temperature:0.1}
+          })
+        }
+      );
+      if(r.status===429){
+        const wait = attempt===0?5000:15000;
+        addLog(`⏳ Gemini rate limit — waiting ${wait/1000}s...`);
+        await new Promise(res=>setTimeout(res,wait));
+        continue;
+      }
+      if(!r.ok){
+        let msg="";
+        try{ const e=await r.json(); msg=e?.error?.message||""; }catch{}
+        if(r.status===400 && msg.includes("API_KEY")) throw new Error("Invalid Gemini API key.");
+        throw new Error(`Gemini API error ${r.status}${msg?": "+msg:""}`);
+      }
+      d = await r.json();
+      break;
+    }
+    if(!d) throw new Error("Gemini rate limit exceeded. Please wait and try again.");
+    const raw = d?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    return raw;
+  };
+
+  // ── Call Groq API chunk (with retry) ──────────────────────────────────────
+  const callGroqChunk = async(text, mode, existingPlaceholders, chunkIdx, totalChunks) => {
+    const chunkLabel = totalChunks > 1 ? ` (chunk ${chunkIdx+1}/${totalChunks})` : "";
+    addLog(`⚡ Groq analyzing${chunkLabel}...`);
+    const prompt = buildPrompt(text, mode, existingPlaceholders);
     let d;
     for(let attempt=0; attempt<4; attempt++){
       const r=await fetch("https://api.groq.com/openai/v1/chat/completions",{
         method:"POST",
-        headers:{"Content-Type":"application/json","Authorization":"Bearer "+apiKey},
+        headers:{"Content-Type":"application/json","Authorization":"Bearer "+groqKey},
         body:JSON.stringify({model:"llama-3.3-70b-versatile",max_tokens:3000,messages:[{role:"user",content:prompt}]})
       });
       if(r.status===429){
-        // Check Retry-After header, or use exponential backoff: 5s, 15s, 35s
         const retryAfter = parseInt(r.headers.get("retry-after")||"0",10);
-        const wait = retryAfter>0 ? retryAfter*1000 : (attempt===0?5000: attempt===1?15000:35000);
-        addLog(`⏳ Rate limit hit — waiting ${Math.round(wait/1000)}s before retry ${attempt+1}/3...`);
-        await new Promise(res=>setTimeout(res, wait));
+        const wait = retryAfter>0 ? retryAfter*1000 : (attempt===0?5000:attempt===1?15000:35000);
+        addLog(`⏳ Groq rate limit — waiting ${Math.round(wait/1000)}s (retry ${attempt+1}/3)...`);
+        await new Promise(res=>setTimeout(res,wait));
         continue;
       }
       if(!r.ok){
-        if(r.status===413) throw new Error("Document chunk too large (413). Try a shorter section.");
-        if(r.status===401) throw new Error("Invalid API key (401).");
+        if(r.status===413) throw new Error("Chunk too large (413). Try a shorter document.");
+        if(r.status===401) throw new Error("Invalid Groq API key (401).");
         let bodyMsg="";
         try{ const eb=await r.json(); bodyMsg=eb?.error?.message||""; }catch{}
-        throw new Error(`API error ${r.status}${bodyMsg?": "+bodyMsg:""}`);
+        throw new Error(`Groq API error ${r.status}${bodyMsg?": "+bodyMsg:""}`);
       }
       d=await r.json();
       break;
     }
-    if(!d) throw new Error("Rate limit exceeded after 3 retries. Please wait a minute and try again.");
+    if(!d) throw new Error("Groq rate limit exceeded after 3 retries. Please wait a minute.");
     const raw=d.choices?.[0]?.message?.content||"";
 
-    // ── Robust JSON extraction & repair ───────────────────────────────────
-    // 1. Strip markdown fences
-    let jsonStr = raw.replace(/```json\s*([\s\S]*?)```/g,"$1").replace(/```\s*([\s\S]*?)```/g,"$1").trim();
+  };
+  // (parsing moved to parseAIResponse)
 
-    // 2. Extract outermost { ... }
+  // ── Parse raw AI text response → structured JSON ─────────────────────────
+  const parseAIResponse = (raw) => {
+    const tryParse = (s) => { try { return JSON.parse(s); } catch(e) { return null; } };
+    let jsonStr = raw.replace(/```json\s*([\s\S]*?)```/g,"$1").replace(/```\s*([\s\S]*?)```/g,"$1").trim();
     const startIdx = jsonStr.indexOf('{');
     const endIdx = jsonStr.lastIndexOf('}');
     if(startIdx !== -1 && endIdx !== -1) jsonStr = jsonStr.slice(startIdx, endIdx+1);
-
-    // 3. Sanitize chars that break JSON (preserve Telugu Unicode — only fix ASCII issues)
     jsonStr = jsonStr
-      .replace(/\u201C|\u201D|\u201E|\u201F/g, '\\"')
-      .replace(/\u2018|\u2019|\u201A|\u201B|\u2032/g, "'")
-      .replace(/\u2013|\u2014/g, "-")
-      .replace(/\u00A0|\u00AD/g, " ")
+      .replace(/[\u201C\u201D\u201E\u201F]/g, '\\"')
+      .replace(/[\u2018\u2019\u201A\u201B\u2032]/g, "'")
+      .replace(/[\u2013\u2014]/g, "-")
+      .replace(/[\u00A0\u00AD]/g, " ")
       .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
-
-    // 3b. Fix unescaped newlines/tabs inside JSON string values
     jsonStr = jsonStr.replace(/"((?:[^"\\]|\\.)*)"/g, (m, inner) => {
-      const fixed = inner.replace(/\n/g,"\\n").replace(/\r/g,"\\r").replace(/\t/g,"\\t");
-      return '"' + fixed + '"';
+      const fixed = inner.replace(/\\/g,"\\\\").replace(/\n/g,"\\n").replace(/\r/g,"\\r").replace(/\t/g,"\\t");
+      const unDoubled = fixed.replace(/\\\\(["\\/bfnrtu])/g,"\\$1");
+      return '"' + unDoubled + '"';
     });
-
-    // 4. Try parse as-is
-    const tryParse = (s) => { try { return JSON.parse(s); } catch(e) { return null; } };
     let parsed = tryParse(jsonStr);
-
-    // 5. If fail: truncate at last fully-closed field object and close the JSON
     if(!parsed){
       let cutAt = -1;
       ['"required":true}', '"required":false}', '"find":""}', '"sample":""}'].forEach(pat => {
         const idx = jsonStr.lastIndexOf(pat);
         if(idx > cutAt) cutAt = idx + pat.length - 1;
       });
-      if(cutAt > startIdx){
-        const truncated = jsonStr.slice(0, cutAt+1) + ']}';
-        parsed = tryParse(truncated);
-      }
-      if(!parsed) parsed = tryParse(jsonStr.trimEnd() + ']}');
-      if(!parsed) parsed = tryParse(jsonStr.trimEnd() + '"]}');
+      if(cutAt > startIdx) parsed = tryParse(jsonStr.slice(0,cutAt+1)+']}');
+      if(!parsed) parsed = tryParse(jsonStr.trimEnd()+']}');
+      if(!parsed) parsed = tryParse(jsonStr.trimEnd()+'"]}');
     }
-
+    if(!parsed){
+      try{
+        const docTitleM=raw.match(/"docTitle"\s*:\s*"([^"\\]*)"/);
+        const languageM=raw.match(/"language"\s*:\s*"([^"\\]*)"/);
+        const fieldsRaw=[];
+        const fieldRe=/\{\s*"key"\s*:\s*"([^"]+)"[\s\S]*?"label"\s*:\s*"([^"]*)"[\s\S]*?"type"\s*:\s*"([^"]*)"[\s\S]*?"required"\s*:\s*(true|false)/g;
+        let fm;
+        while((fm=fieldRe.exec(raw))!==null){
+          const sampleM=raw.slice(fm.index).match(/"sample"\s*:\s*"([^"]*)"/);
+          const findM=raw.slice(fm.index).match(/"find"\s*:\s*"([^"]*)"/);
+          fieldsRaw.push({key:fm[1],label:fm[2],type:fm[3],required:fm[4]==="true",
+            sample:sampleM?sampleM[1]:"",find:findM?findM[1]:""});
+        }
+        if(fieldsRaw.length>0||docTitleM){
+          parsed={docTitle:docTitleM?docTitleM[1]:"Document",language:languageM?languageM[1]:"Auto",fields:fieldsRaw};
+          addLog(`⚠️ Used fallback extractor: ${fieldsRaw.length} fields`);
+        }
+      }catch(fe){}
+    }
     if(!parsed) throw new Error("Could not parse AI response as JSON. Please try again.");
-
     if(parsed.fields && Array.isArray(parsed.fields)){
       parsed.fields=parsed.fields.map(f=>{
         const k=f.key||f.field_key||f.name||f.fieldName||f.placeholder||
           (f.label||f.fieldLabel||f.field_name||"FIELD").toUpperCase().replace(/[^A-Z0-9]+/g,"_");
-        return {
-          key:k,
-          label:f.label||f.fieldLabel||f.field_label||f.description||f.field_name||k,
-          type:f.type||f.fieldType||"text",
-          required:f.required!==undefined?f.required:true,
+        return {key:k,label:f.label||f.fieldLabel||f.field_label||f.description||f.field_name||k,
+          type:f.type||f.fieldType||"text",required:f.required!==undefined?f.required:true,
           sample:f.sample||f.example||f.value||f.original_value||"",
-          find:f.find||f.sample||f.example||""
-        };
+          find:f.find||f.sample||f.example||""};
       });
     }
+    return parsed;
+  };
+
+  // ── callAIChunk: Groq only, used for English chunked processing ───────────
+  const callAIChunk = async(text, mode, existingPlaceholders, chunkIdx, totalChunks) => {
+    const raw = await callGroqChunk(text, mode, existingPlaceholders, chunkIdx, totalChunks);
+    const parsed = parseAIResponse(raw);
     addLog(`✅ Chunk ${chunkIdx+1}: found ${parsed.fields?.length||0} fields`);
     return parsed;
   };
 
-  // IMPROVED: Analyze long text in chunks, merge results
+  // ── Main dispatcher: auto-route to Groq (English) or Gemini (regional) ───
   const callAI = async(fullText, mode, existingPlaceholders) => {
+    const {lang, useGemini} = detectLanguage(fullText);
+
+    // Use Gemini for regional languages (single-shot — no chunking needed)
+    if(useGemini && geminiKey){
+      addLog(`🔍 Detected language: ${lang} → using Gemini API (single-shot)`);
+      addLog(`📊 Document: ${fullText.length} chars — sending in full`);
+      const cleanText = sanitizeTextForAI(fullText);
+      const raw = await callGemini(cleanText, mode, existingPlaceholders);
+      const parsed = parseAIResponse(raw);
+      addLog(`✅ Gemini found ${parsed.fields?.length||0} fields`);
+      return parsed;
+    }
+
+    // Fallback: if Gemini key missing but non-English, warn and use Groq
+    if(useGemini && !geminiKey){
+      addLog(`⚠️ Detected: ${lang} — no Gemini key, falling back to Groq (may have errors)`);
+    } else {
+      addLog(`🔍 Detected language: ${lang} → using Groq API (chunked)`);
+    }
+
+    // Groq: chunk large documents
     const chunks = splitIntoChunks(fullText, CHUNK_SIZE);
     const numChunks = Math.min(chunks.length, MAX_CHUNKS);
     addLog(`📊 Document: ${fullText.length} chars → ${chunks.length} chunks (analyzing ${numChunks})`);
-
     const results = [];
     for(let i=0; i<numChunks; i++){
       const cleanChunk = sanitizeTextForAI(chunks[i]);
       const chunkResult = await callAIChunk(cleanChunk, mode, existingPlaceholders, i, numChunks);
       results.push(chunkResult);
-      // Small delay between chunks to avoid rate limiting
-      if(i < numChunks-1) await new Promise(r=>setTimeout(r,1500)); // Groq free tier: space out requests
+      if(i < numChunks-1) await new Promise(r=>setTimeout(r,1500));
     }
     const merged = mergeAiResults(results);
     addLog(`🔀 Merged: ${merged.fields.length} total fields from ${numChunks} chunks`);
@@ -677,7 +815,7 @@ ${text}`;
   if(phase==="idle") return(
     <div className="fadein">
       <Heading title="Convert Document → Fillable Template"
-        sub="Upload Word (.docx) for Smart Template mode, or paste text. Large docs auto-split into chunks."/>
+        sub="English → Groq (chunked) · Telugu/Hindi/Tamil → Gemini (single-shot). Upload DOCX or paste text."/>
       <Card>
         <div onClick={()=>fileRef.current.click()}
           style={{border:"2px dashed #CBD5E1",borderRadius:12,padding:"36px 16px",textAlign:"center",background:C.bg,cursor:"pointer"}}
@@ -699,9 +837,12 @@ ${text}`;
           <Btn color={C.indigo} disabled={!pasteText.trim()} onClick={()=>process(pasteText)}>
             🔄 Convert to Text Template
           </Btn>
-          {pasteText.length>3000 && (
-            <Badge color={C.amber}>⚠ Long doc: {pasteText.length} chars → will use {Math.min(splitIntoChunks(pasteText,CHUNK_SIZE).length,MAX_CHUNKS)} chunks</Badge>
-          )}
+          {pasteText.length>3000 && (()=>{
+            const {lang,useGemini}=detectLanguage(pasteText);
+            return useGemini && geminiKey
+              ? <Badge color={C.teal}>🌐 {lang} → Gemini single-shot ({pasteText.length} chars)</Badge>
+              : <Badge color={C.amber}>⚡ Long doc: {pasteText.length} chars → {Math.min(splitIntoChunks(pasteText,CHUNK_SIZE).length,MAX_CHUNKS)} Groq chunks</Badge>;
+          })()}
         </div>
         <div style={{marginTop:20}}>
           <p style={{fontSize:12,color:C.muted,fontWeight:600,marginBottom:8}}>Try a sample:</p>
@@ -1457,21 +1598,22 @@ const NAV=[
 
 // ── ROOT APP ─────────────────────────────────────────────────────────────────
 function App() {
-  const [apiKey,setApiKey]=useState("");
+  const [keys,setKeys]=useState(null); // {groqKey, geminiKey}
   const [active,setActive]=useState("convert");
   const [sidebar,setSidebar]=useState(true);
   const [template,setTemplate]=useState(null);
   const [records,setRecords]=useState([]);
 
-  if(!apiKey) return <ApiSetup onDone={k=>setApiKey(k)}/>;
+  if(!keys) return <ApiSetup onDone={k=>setKeys(k)}/>;
 
+  const {groqKey, geminiKey} = keys;
   const addRecord=rec=>setRecords(p=>[...p,rec]);
 
   const modules={
-    convert:()=><Convert apiKey={apiKey} onDone={r=>{setTemplate(r);setActive("fill");}}/>,
+    convert:()=><Convert groqKey={groqKey} geminiKey={geminiKey} onDone={r=>{setTemplate(r);setActive("fill");}}/>,
     fill:   ()=><Fill template={template} addRecord={addRecord}/>,
     editor: ()=><Editor template={template} onUpdate={setTemplate}/>,
-    chat:   ()=><Chat template={template} apiKey={apiKey}/>,
+    chat:   ()=><Chat template={template} apiKey={groqKey}/>,
     batch:  ()=><Batch template={template}/>,
     dash:   ()=><Dashboard records={records}/>,
   };
@@ -1514,7 +1656,7 @@ function App() {
                 <div style={{color:"#6B84F5",fontSize:10}}>Professional Plan</div>
               </div>
             </div>
-            <button onClick={()=>{setApiKey("");setTemplate(null);setRecords([]);}}
+            <button onClick={()=>{setKeys(null);setTemplate(null);setRecords([]);}}
               style={{marginTop:10,background:"none",border:"1px solid #F43F5E40",color:"#F43F5E",
                 borderRadius:7,padding:"4px 10px",fontSize:11,cursor:"pointer",width:"100%"}}>
               🔑 Change API Key
